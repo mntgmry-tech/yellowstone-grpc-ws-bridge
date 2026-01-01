@@ -4,6 +4,11 @@ import os
 import websockets
 
 WS_URL = os.environ.get("BRIDGE_WS_URL", "ws://127.0.0.1:8787")
+CLIENT_ID = os.environ.get("BRIDGE_CLIENT_ID", "")
+
+INCLUDE_ACCOUNTS = True
+INCLUDE_TOKEN_BALANCE_CHANGES = True
+INCLUDE_LOGS = False
 
 WATCH_ACCOUNTS = [
     # "YourAtaPubkeyHere",
@@ -15,6 +20,18 @@ WATCH_MINTS = [
 
 async def main():
     async with websockets.connect(WS_URL, max_size=64 * 1024 * 1024) as ws:
+        if CLIENT_ID:
+            await ws.send(json.dumps({"op": "resume", "clientId": CLIENT_ID}))
+        await ws.send(
+            json.dumps(
+                {
+                    "op": "setOptions",
+                    "includeAccounts": INCLUDE_ACCOUNTS,
+                    "includeTokenBalanceChanges": INCLUDE_TOKEN_BALANCE_CHANGES,
+                    "includeLogs": INCLUDE_LOGS,
+                }
+            )
+        )
         if WATCH_ACCOUNTS:
             await ws.send(json.dumps({"op": "setAccounts", "accounts": WATCH_ACCOUNTS}))
         if WATCH_MINTS:
