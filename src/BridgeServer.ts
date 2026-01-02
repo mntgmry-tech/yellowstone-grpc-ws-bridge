@@ -4,6 +4,8 @@ import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import { ClientMsg, ClientOptions, CommitmentLabel, WsEvent } from './types'
 import { StatsTracker } from './utils/stats'
+import { RateLimiter } from './utils/rateLimit'
+import { RingBuffer } from './utils/ringBuffer'
 import {
   extractAccounts,
   extractTokenBalanceChanges,
@@ -18,6 +20,11 @@ type BridgeConfig = {
   wsPort: number
   wsIdleTimeoutMs: number
   grpcRetentionMs: number
+  grpcRetentionMaxEvents: number
+  grpcRetryBaseMs: number
+  grpcRetryMaxMs: number
+  wsRateLimitCount: number
+  wsRateLimitWindowMs: number
   grpcEndpoint: string
   xToken: string
 }
@@ -38,6 +45,7 @@ type ClientSession = {
   options: ClientOptions
   watchAccounts: Set<string>
   watchMints: Set<string>
+  rateLimiter: RateLimiter
 }
 
 type BacklogItem = {
@@ -58,7 +66,7 @@ export class BridgeServer {
 
   private sessions = new Map<string, ClientSession>()
   private socketToSession = new Map<WebSocket, ClientSession>()
-  private backlog: BacklogItem[] = []
+  private backlog: RingBuffer<BacklogItem>
 
   private subscriptionAccounts = new Set<string>()
   private subscriptionMints = new Set<string>()
@@ -77,6 +85,7 @@ export class BridgeServer {
 
   constructor(private config: BridgeConfig) {
     this.grpcClient = new Client(config.grpcEndpoint, config.xToken, grpcOptions)
+    this.backlog = new RingBuffer<BacklogItem>(config.grpcRetentionMaxEvents)
     this.wsHub = new WsHub({
       host: config.wsBind,
       port: config.wsPort,
@@ -100,22 +109,21 @@ export class BridgeServer {
   private handleClientConnected = (ws: WebSocket) => {
     const session = this.createSession(ws)
     ws.on('pong', () => this.touchClient(ws))
-    console.log(
-      `[ws] client connected clientId=${session.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`
-    )
+    console.log(`[ws] client connected clientId=${session.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`)
     this.sendStatus(session)
   }
 
   private handleClientMessage = (ws: WebSocket, msg: ClientMsg) => {
     this.touchClient(ws)
 
-    if (msg.op === 'resume') {
-      this.resumeSession(ws, msg.clientId)
-      return
-    }
-
     const session = this.socketToSession.get(ws)
     if (!session) return
+    if (!this.allowClientMessage(session)) return
+
+    if (msg.op === 'resume') {
+      this.resumeSession(ws, msg.clientId, session)
+      return
+    }
 
     if (msg.op === 'setOptions') {
       this.updateClientOptions(session, msg)
@@ -185,22 +193,22 @@ export class BridgeServer {
       lastSeenAt: Date.now(),
       options: { ...defaultClientOptions },
       watchAccounts: new Set<string>(),
-      watchMints: new Set<string>()
+      watchMints: new Set<string>(),
+      rateLimiter: new RateLimiter(this.config.wsRateLimitCount, this.config.wsRateLimitWindowMs)
     }
     this.sessions.set(session.id, session)
     this.socketToSession.set(ws, session)
     return session
   }
 
-  private resumeSession(ws: WebSocket, clientId: string) {
+  private resumeSession(ws: WebSocket, clientId: string, current: ClientSession) {
     const target = this.sessions.get(clientId)
-    const current = this.socketToSession.get(ws)
     if (!target) {
-      if (current) this.sendStatus(current)
+      this.sendStatus(current)
       return
     }
 
-    if (current && current.id !== target.id) {
+    if (current.id !== target.id) {
       this.removeSession(current)
     }
 
@@ -239,6 +247,17 @@ export class BridgeServer {
     const msg = this.buildStatusEvent(session)
     const sent = this.wsHub.send(ws, msg)
     if (sent) this.stats.recordWsEvent(msg.type, 1)
+  }
+
+  private allowClientMessage(session: ClientSession) {
+    const now = Date.now()
+    if (session.rateLimiter.allow(now)) return true
+    if (session.rateLimiter.shouldWarn(now)) {
+      console.warn(
+        `[ws] rate limit exceeded clientId=${session.id} limit=${session.rateLimiter.getLimit()} windowMs=${session.rateLimiter.getWindowMs()}`
+      )
+    }
+    return false
   }
 
   private broadcastStatus(grpcConnectedOverride?: boolean) {
@@ -517,10 +536,10 @@ export class BridgeServer {
   }
 
   private maybeBufferEvent(event: WsEvent) {
-    if (this.config.grpcRetentionMs <= 0) return
+    if (this.config.grpcRetentionMs <= 0 || this.config.grpcRetentionMaxEvents <= 0) return
     const now = Date.now()
     if (!this.shouldBuffer(now)) {
-      if (this.backlog.length) this.backlog = []
+      if (this.backlog.length) this.backlog.clear()
       return
     }
     this.backlog.push({ ts: now, event })
@@ -539,21 +558,19 @@ export class BridgeServer {
   private replayBacklog(session: ClientSession, since: number) {
     if (!session.ws || this.backlog.length === 0) return
     let delivered = 0
-    for (const item of this.backlog) {
-      if (item.ts <= since) continue
+    this.backlog.forEach((item) => {
+      if (item.ts <= since) return
       const payload = this.prepareTransactionForSession(item.event, session)
-      if (!payload) continue
-      const sent = this.wsHub.send(session.ws, payload)
+      if (!payload) return
+      const sent = this.wsHub.send(session.ws as WebSocket, payload)
       if (sent) delivered += 1
-    }
+    })
     this.stats.recordWsEvent('transaction', delivered)
   }
 
   private trimBacklog(now: number) {
     const cutoff = now - this.config.grpcRetentionMs
-    while (this.backlog.length && this.backlog[0].ts < cutoff) {
-      this.backlog.shift()
-    }
+    this.backlog.trimBefore(cutoff, (item) => item.ts)
   }
 
   private stopGrpcStreams() {
@@ -564,34 +581,30 @@ export class BridgeServer {
     }, 1000)
 
     if (this.processedStream) {
-      try {
-        this.processedStream.end()
-      } catch {
-        // ignore
-      }
-      if (typeof this.processedStream.cancel === 'function') {
-        try {
-          this.processedStream.cancel()
-        } catch {
-          // ignore
-        }
-      }
+      this.safeStopStream(this.processedStream)
       this.processedStream = undefined
     }
     if (this.confirmedStream) {
-      try {
-        this.confirmedStream.end()
-      } catch {
-        // ignore
-      }
-      if (typeof this.confirmedStream.cancel === 'function') {
-        try {
-          this.confirmedStream.cancel()
-        } catch {
-          // ignore
-        }
-      }
+      this.safeStopStream(this.confirmedStream)
       this.confirmedStream = undefined
+    }
+  }
+
+  private safeStopStream(stream: any) {
+    try {
+      if (typeof stream.end === 'function') stream.end()
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof stream.cancel === 'function') stream.cancel()
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof stream.removeAllListeners === 'function') stream.removeAllListeners()
+    } catch {
+      // ignore
     }
   }
 
@@ -667,11 +680,14 @@ export class BridgeServer {
   }
 
   private async runGrpcLoop(commitment: CommitmentLevel, label: CommitmentLabel) {
+    let attempt = 0
     while (true) {
       if (!this.grpcWanted) {
+        attempt = 0
         await new Promise((r) => setTimeout(r, 500))
         continue
       }
+      let failure = false
       try {
         console.log(`[grpc] connecting ${label} -> ${this.config.grpcEndpoint}`)
         const stream = await this.connectStream(commitment, label)
@@ -683,14 +699,34 @@ export class BridgeServer {
           stream.on('end', resolve)
           stream.on('close', resolve)
         })
+        if (this.grpcWanted && !this.stoppingGrpc) failure = true
       } catch (e) {
+        failure = true
         console.error(`[grpc] ${label} loop error:`, e)
       } finally {
         if (label === 'processed') this.processedStream = undefined
         if (label === 'confirmed') this.confirmedStream = undefined
       }
-      await new Promise((r) => setTimeout(r, 1000))
+
+      if (!failure) {
+        attempt = 0
+        continue
+      }
+
+      attempt += 1
+      const delay = this.getRetryDelayMs(attempt)
+      if (delay > 0) {
+        await new Promise((r) => setTimeout(r, delay))
+      }
     }
+  }
+
+  private getRetryDelayMs(attempt: number) {
+    if (attempt <= 0) return 0
+    const base = this.config.grpcRetryBaseMs
+    const max = this.config.grpcRetryMaxMs
+    const exp = Math.min(max, base * 2 ** (attempt - 1))
+    return Math.floor(Math.random() * exp)
   }
 
   private connectedCount() {

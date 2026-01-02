@@ -34,6 +34,11 @@ Environment variables:
 - `WS_IDLE_TIMEOUT_MS` (default `120000`) to close idle WS connections
 - `GRPC_SUBSCRIPTION_RETENTION_MS` (default `120000`) to keep gRPC subscriptions and replay
   missed events for disconnected clients
+- `GRPC_RETENTION_MAX_EVENTS` (default `20000`) to cap the in-memory replay buffer (set to `0` to disable replay)
+- `GRPC_RETRY_BASE_MS` (default `1000`) base delay for gRPC reconnect backoff
+- `GRPC_RETRY_MAX_MS` (default `30000`) max delay for gRPC reconnect backoff
+- `WS_RATE_LIMIT_COUNT` (default `25`) control messages per window (set to `0` to disable)
+- `WS_RATE_LIMIT_WINDOW_MS` (default `5000`) rate limit window
 - `BRIDGE_WS_URL` (client examples only, default `ws://127.0.0.1:8787`)
 - `BRIDGE_CLIENT_ID` (client examples only, optional resume token)
 
@@ -81,10 +86,16 @@ By default, `logs` are excluded to keep payloads small. `accounts` and
 inactivity past `WS_IDLE_TIMEOUT_MS` closes the connection. Any client message
 (including `ping`) also counts as activity.
 
+Control messages are rate-limited per client; messages above the configured
+limit are dropped with a warning.
+
 If a client disconnects, its subscriptions are retained for
 `GRPC_SUBSCRIPTION_RETENTION_MS`. Reconnect with the last seen `clientId` to
 resume and receive missed transactions from the retention window. Set the
 retention to `0` to drop subscriptions immediately on disconnect.
+
+The replay buffer is bounded by `GRPC_RETENTION_MAX_EVENTS`; if that limit is
+exceeded, the oldest events are dropped.
 
 ## Events
 

@@ -6,6 +6,11 @@ const server = new BridgeServer({
   wsPort: env.wsPort,
   wsIdleTimeoutMs: env.wsIdleTimeoutMs,
   grpcRetentionMs: env.grpcRetentionMs,
+  grpcRetentionMaxEvents: env.grpcRetentionMaxEvents,
+  grpcRetryBaseMs: env.grpcRetryBaseMs,
+  grpcRetryMaxMs: env.grpcRetryMaxMs,
+  wsRateLimitCount: env.wsRateLimitCount,
+  wsRateLimitWindowMs: env.wsRateLimitWindowMs,
   grpcEndpoint: env.grpcEndpoint,
   xToken: env.xToken
 })
