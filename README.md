@@ -12,11 +12,14 @@ connected WebSocket clients.
 - Maintains dynamic watchlists for accounts and mints, controlled over WebSocket.
 - Emits `status` events with connection state and head slots.
 - Emits `transaction` events with slot, signature, accounts, and token balance deltas.
+- Exposes an HTTP health endpoint that reports node health.
 
 ## How it works
 
 - Reads configuration from `.env` (via dotenv) or process environment.
 - Starts a WebSocket server and tracks connected clients.
+- Polls the Solana RPC `getHealth` endpoint and serves `/health` over HTTP.
+- Pauses gRPC subscriptions when the node is unhealthy and resumes automatically.
 - Accepts control messages (`set*`, `add*`, `remove*`) to rewrite gRPC
   subscriptions without restarting the service.
 - Parses gRPC stream updates, extracts accounts and token balance changes, and
@@ -26,11 +29,21 @@ connected WebSocket clients.
 
 Environment variables:
 
-- `YELLOWSTONE_GRPC_ENDPOINT` (default `127.0.0.1:10000`)
-  - Accepts `host:port` or full `http(s)://` URL.
-- `YELLOWSTONE_X_TOKEN` (optional auth token header).
+- `YELLOWSTONE_HOST` (default `127.0.0.1`)
+- `YELLOWSTONE_GRPC_PORT` (default `10000`)
+- `YELLOWSTONE_RPC_PORT` (default `8899`)
+- `YELLOWSTONE_GRPC_PROTOCOL` (default `http`)
+- `YELLOWSTONE_RPC_PROTOCOL` (default `http`)
+- `YELLOWSTONE_GRPC_ENDPOINT` (legacy override, used only when `YELLOWSTONE_HOST` and `YELLOWSTONE_GRPC_PORT` are unset)
+- `YELLOWSTONE_X_TOKEN` (optional auth token header)
 - `WS_BIND` (default `0.0.0.0`)
 - `WS_PORT` (default `8787`)
+- `HEALTH_BIND` (default `0.0.0.0`)
+- `HEALTH_PORT` (default `8788`)
+- `SOLANA_HEALTHCHECK_INTERVAL_MS` (default `30000`)
+- `SOLANA_HEALTHCHECK_TIMEOUT_MS` (default `5000`)
+- `SOLANA_HEALTHCHECK_INTERVAL_UNHEALTHY_MS` (default `1000`)
+- `GRPC_REQUIRE_HEALTHY` (default `true`) to gate gRPC subscriptions on node health
 - `WS_IDLE_TIMEOUT_MS` (default `120000`) to close idle WS connections
 - `GRPC_SUBSCRIPTION_RETENTION_MS` (default `120000`) to keep gRPC subscriptions and replay
   missed events for disconnected clients
@@ -49,7 +62,9 @@ Copy `example.env` to `.env` to get started.
 With Docker:
 
 ```bash
-export YELLOWSTONE_GRPC_ENDPOINT="10.1.2.3:10000"   # or "http://10.1.2.3:10000"
+export YELLOWSTONE_HOST="10.1.2.3"
+export YELLOWSTONE_GRPC_PORT="10000"
+export YELLOWSTONE_RPC_PORT="8899"
 # export YELLOWSTONE_X_TOKEN="..."                 # optional
 
 docker compose up -d --build
@@ -64,6 +79,12 @@ npm start
 ```
 
 WebSocket server will be at: `ws://<host>:8787`
+Health endpoint: `http://<host>:8788/health` (200 when the node is healthy, 503 otherwise)
+
+When the node is unhealthy, the health check interval switches to
+`SOLANA_HEALTHCHECK_INTERVAL_UNHEALTHY_MS` and the timeout temporarily drops to
+1s so the bridge can reconnect quickly; once healthy, they return to
+`SOLANA_HEALTHCHECK_INTERVAL_MS` and `SOLANA_HEALTHCHECK_TIMEOUT_MS`.
 
 ## WebSocket control plane
 
@@ -105,6 +126,7 @@ exceeded, the oldest events are dropped.
 - `clientId`: stable ID for resume
 - `now`: ISO timestamp
 - `grpcConnected`: boolean
+- `nodeHealthy`: boolean
 - `processedHeadSlot`, `confirmedHeadSlot`: latest observed slots
 - `watchedAccounts`, `watchedMints`: watchlist sizes
 

@@ -6,6 +6,7 @@ import { ClientMsg, ClientOptions, CommitmentLabel, WsEvent } from './types'
 import { StatsTracker } from './utils/stats'
 import { RateLimiter } from './utils/rateLimit'
 import { RingBuffer } from './utils/ringBuffer'
+import { NodeHealthMonitor, NodeHealthStatus } from './NodeHealthMonitor'
 import {
   extractAccounts,
   extractTokenBalanceChanges,
@@ -25,8 +26,13 @@ type BridgeConfig = {
   grpcRetryMaxMs: number
   wsRateLimitCount: number
   wsRateLimitWindowMs: number
+  grpcRequireHealthy: boolean
+  healthCheckIntervalMs: number
+  healthCheckTimeoutMs: number
+  healthCheckIntervalUnhealthyMs: number
   grpcEndpoint: string
   xToken: string
+  healthMonitor?: NodeHealthMonitor
 }
 
 const grpcOptions = {
@@ -51,6 +57,11 @@ type ClientSession = {
 type BacklogItem = {
   ts: number
   event: WsEvent
+}
+
+type StopContext = {
+  reason: string
+  clientIds?: string[]
 }
 
 const defaultClientOptions: ClientOptions = {
@@ -82,6 +93,10 @@ export class BridgeServer {
   private pendingWrite = false
   private stoppingGrpc = false
   private stopResetTimer: ReturnType<typeof setTimeout> | undefined
+  private lastStopAt?: number
+  private lastStopContext?: StopContext
+  private nodeHealthy = true
+  private healthMonitor?: NodeHealthMonitor
 
   constructor(private config: BridgeConfig) {
     this.grpcClient = new Client(config.grpcEndpoint, config.xToken, grpcOptions)
@@ -95,6 +110,12 @@ export class BridgeServer {
         onClose: this.handleClientClosed
       }
     })
+
+    if (config.healthMonitor) {
+      this.healthMonitor = config.healthMonitor
+      this.nodeHealthy = config.healthMonitor.isHealthy()
+      config.healthMonitor.onStatus(this.handleHealthStatus)
+    }
   }
 
   start() {
@@ -139,27 +160,27 @@ export class BridgeServer {
     switch (msg.op) {
       case 'setAccounts':
         this.applyList(session.watchAccounts, msg.accounts ?? [], 'set')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       case 'addAccounts':
         this.applyList(session.watchAccounts, msg.accounts ?? [], 'add')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       case 'removeAccounts':
         this.applyList(session.watchAccounts, msg.accounts ?? [], 'remove')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       case 'setMints':
         this.applyList(session.watchMints, msg.mints ?? [], 'set')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       case 'addMints':
         this.applyList(session.watchMints, msg.mints ?? [], 'add')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       case 'removeMints':
         this.applyList(session.watchMints, msg.mints ?? [], 'remove')
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'watchlist_update', clientIds: [session.id] })
         break
       default:
         break
@@ -178,7 +199,7 @@ export class BridgeServer {
     if (this.config.grpcRetentionMs === 0) {
       this.sessions.delete(session.id)
     }
-    this.updateSubscriptions()
+    this.updateSubscriptions({ reason: 'disconnect', clientIds: [session.id] })
     const reasonSuffix = reason ? ` reason="${reason}"` : ''
     console.log(
       `[ws] client disconnected clientId=${session.id} (${this.clientLabel(ws)}) code=${code}${reasonSuffix} total=${this.connectedCount()}`
@@ -209,7 +230,7 @@ export class BridgeServer {
     }
 
     if (current.id !== target.id) {
-      this.removeSession(current)
+      this.removeSession(current, 'resume_replaced')
     }
 
     if (target.ws && target.ws !== ws) {
@@ -233,12 +254,12 @@ export class BridgeServer {
     this.replayBacklog(target, resumeFrom)
   }
 
-  private removeSession(session: ClientSession) {
+  private removeSession(session: ClientSession, reason: string) {
     if (session.ws) {
       this.socketToSession.delete(session.ws)
     }
     this.sessions.delete(session.id)
-    this.updateSubscriptions()
+    this.updateSubscriptions({ reason, clientIds: [session.id] })
   }
 
   private sendStatus(session: ClientSession) {
@@ -301,6 +322,7 @@ export class BridgeServer {
       clientId: session.id,
       now: new Date().toISOString(),
       grpcConnected: grpcConnectedOverride ?? this.grpcConnected(),
+      nodeHealthy: this.nodeHealthy,
       processedHeadSlot: this.processedHeadSlot,
       confirmedHeadSlot: this.confirmedHeadSlot,
       watchedAccounts: session.watchAccounts.size,
@@ -310,6 +332,40 @@ export class BridgeServer {
 
   private grpcConnected() {
     return Boolean(this.processedStream || this.confirmedStream)
+  }
+
+  private grpcAllowed() {
+    if (!this.grpcWanted) return false
+    if (!this.config.grpcRequireHealthy) return true
+    return this.nodeHealthy
+  }
+
+  private handleHealthStatus = (status: NodeHealthStatus) => {
+    const wasHealthy = this.nodeHealthy
+    this.nodeHealthy = status.ok
+
+    if (this.healthMonitor) {
+      const targetTimeout = status.ok ? this.config.healthCheckTimeoutMs : 1000
+      const targetInterval = status.ok ? this.config.healthCheckIntervalMs : this.config.healthCheckIntervalUnhealthyMs
+      if (this.healthMonitor.getTimeoutMs() !== targetTimeout) {
+        this.healthMonitor.setTimeoutMs(targetTimeout)
+      }
+      if (this.healthMonitor.getIntervalMs() !== targetInterval) {
+        this.healthMonitor.setIntervalMs(targetInterval)
+      }
+    }
+
+    if (this.config.grpcRequireHealthy) {
+      if (!status.ok) {
+        this.stopGrpcStreams({ reason: 'node_unhealthy', clientIds: this.connectedClientIds() })
+      } else if (this.grpcWanted) {
+        this.scheduleResubscribe()
+      }
+    }
+
+    if (wasHealthy !== status.ok) {
+      this.broadcastStatus()
+    }
   }
 
   private applyList(set: Set<string>, list: string[], mode: 'set' | 'add' | 'remove') {
@@ -351,14 +407,19 @@ export class BridgeServer {
     this.stats.recordWsEvent('transaction', delivered)
   }
 
-  private updateSubscriptions() {
+  private updateSubscriptions(context?: StopContext) {
     const changed = this.updateSubscriptionUnion()
     const wantGrpc = this.subscriptionAccounts.size > 0 || this.subscriptionMints.size > 0
     const wasWanted = this.grpcWanted
     this.grpcWanted = wantGrpc
 
     if (!wantGrpc) {
-      this.stopGrpcStreams()
+      this.stopGrpcStreams(context)
+      return
+    }
+
+    if (this.config.grpcRequireHealthy && !this.nodeHealthy) {
+      this.stopGrpcStreams({ reason: 'node_unhealthy', clientIds: this.connectedClientIds() })
       return
     }
 
@@ -419,7 +480,7 @@ export class BridgeServer {
   }
 
   private scheduleResubscribe() {
-    if (this.pendingWrite || !this.grpcWanted) return
+    if (this.pendingWrite || !this.grpcAllowed()) return
     this.pendingWrite = true
     setTimeout(async () => {
       this.pendingWrite = false
@@ -428,7 +489,7 @@ export class BridgeServer {
   }
 
   private async writeSubscriptionSafely() {
-    if (!this.grpcWanted) return
+    if (!this.grpcAllowed()) return
     const writes: Array<Promise<void>> = []
 
     if (this.processedStream) {
@@ -455,6 +516,9 @@ export class BridgeServer {
       await Promise.all(writes)
       this.broadcastStatus(true)
     } catch (e) {
+      if (this.isIntentionalGrpcShutdown(e)) {
+        return
+      }
       this.broadcastStatus(false)
       console.error('[grpc] failed to write subscription:', e)
     }
@@ -468,16 +532,22 @@ export class BridgeServer {
     })
 
     stream.on('error', (err: any) => {
-      if (this.isExpectedGrpcShutdown(err)) {
-        console.log(`[grpc] stream cancelled (${label})`)
+      if (this.isIntentionalGrpcShutdown(err)) {
+        this.logStreamCancelled(label)
         return
       }
       console.error(`[grpc] stream error (${label}):`, err)
       stream.end()
     })
 
-    stream.on('end', () => console.error(`[grpc] stream ended (${label})`))
-    stream.on('close', () => console.error(`[grpc] stream closed (${label})`))
+    stream.on('end', () => {
+      if (this.isStoppingRecently()) return
+      console.error(`[grpc] stream ended (${label})`)
+    })
+    stream.on('close', () => {
+      if (this.isStoppingRecently()) return
+      console.error(`[grpc] stream closed (${label})`)
+    })
 
     await new Promise<void>((resolve, reject) => {
       stream.write(this.currentReq(commitment), (err: any) => (err ? reject(err) : resolve()))
@@ -573,12 +643,8 @@ export class BridgeServer {
     this.backlog.trimBefore(cutoff, (item) => item.ts)
   }
 
-  private stopGrpcStreams() {
-    this.stoppingGrpc = true
-    if (this.stopResetTimer) clearTimeout(this.stopResetTimer)
-    this.stopResetTimer = setTimeout(() => {
-      this.stoppingGrpc = false
-    }, 1000)
+  private stopGrpcStreams(context?: StopContext) {
+    this.markStopping(context)
 
     if (this.processedStream) {
       this.safeStopStream(this.processedStream)
@@ -602,17 +668,53 @@ export class BridgeServer {
       // ignore
     }
     try {
-      if (typeof stream.removeAllListeners === 'function') stream.removeAllListeners()
+      if (typeof stream.removeAllListeners === 'function') {
+        stream.removeAllListeners('data')
+      }
     } catch {
       // ignore
     }
   }
 
-  private isExpectedGrpcShutdown(err: any) {
-    if (this.stoppingGrpc) return true
-    if (err?.code === 1) return true
+  private markStopping(context?: StopContext) {
+    this.stoppingGrpc = true
+    this.lastStopAt = Date.now()
+    this.lastStopContext = context
+    if (this.stopResetTimer) clearTimeout(this.stopResetTimer)
+    this.stopResetTimer = setTimeout(() => {
+      this.stoppingGrpc = false
+    }, 1000)
+  }
+
+  private isStoppingRecently() {
+    if (!this.lastStopAt) return false
+    return Date.now() - this.lastStopAt <= 10_000
+  }
+
+  private getRecentStopContext() {
+    if (!this.isStoppingRecently()) return undefined
+    return this.lastStopContext
+  }
+
+  private isCancelledError(err: any) {
+    if (err?.code === 1 || err?.code === '1') return true
+    if (typeof err?.code === 'string' && err.code.toUpperCase() === 'CANCELLED') return true
     const details = typeof err?.details === 'string' ? err.details : ''
-    return details.toLowerCase().includes('cancelled')
+    if (details.toLowerCase().includes('cancelled')) return true
+    const message = typeof err?.message === 'string' ? err.message : ''
+    return message.toLowerCase().includes('cancelled')
+  }
+
+  private isIntentionalGrpcShutdown(err: any) {
+    if (!this.isCancelledError(err)) return false
+    return this.stoppingGrpc || this.isStoppingRecently()
+  }
+
+  private logStreamCancelled(label: CommitmentLabel) {
+    const context = this.getRecentStopContext()
+    const reason = context?.reason ?? 'unknown'
+    const clients = context?.clientIds?.length ? context.clientIds.join(',') : 'unknown'
+    console.log(`[grpc] stream cancelled (${label}) for clientId=${clients} reason=${reason}`)
   }
 
   private startGrpcLoops() {
@@ -620,7 +722,7 @@ export class BridgeServer {
     void this.runGrpcLoop(CommitmentLevel.CONFIRMED, 'confirmed')
 
     setInterval(() => {
-      if (!this.grpcWanted) return
+      if (!this.grpcAllowed()) return
       const id = this.pingId++
       this.stats.recordPing(id)
       try {
@@ -672,7 +774,7 @@ export class BridgeServer {
         for (const session of expiredSessions) {
           this.sessions.delete(session.id)
         }
-        this.updateSubscriptions()
+        this.updateSubscriptions({ reason: 'retention_expired', clientIds: expiredSessions.map((s) => s.id) })
       }
 
       this.trimBacklog(now)
@@ -682,7 +784,7 @@ export class BridgeServer {
   private async runGrpcLoop(commitment: CommitmentLevel, label: CommitmentLabel) {
     let attempt = 0
     while (true) {
-      if (!this.grpcWanted) {
+      if (!this.grpcAllowed()) {
         attempt = 0
         await new Promise((r) => setTimeout(r, 500))
         continue
@@ -699,10 +801,16 @@ export class BridgeServer {
           stream.on('end', resolve)
           stream.on('close', resolve)
         })
-        if (this.grpcWanted && !this.stoppingGrpc) failure = true
+        const shouldRetry = this.grpcWanted && (!this.config.grpcRequireHealthy || this.nodeHealthy)
+        if (shouldRetry && !this.stoppingGrpc) failure = true
       } catch (e) {
-        failure = true
-        console.error(`[grpc] ${label} loop error:`, e)
+        if (this.isIntentionalGrpcShutdown(e)) {
+          failure = false
+          this.logStreamCancelled(label)
+        } else {
+          failure = true
+          console.error(`[grpc] ${label} loop error:`, e)
+        }
       } finally {
         if (label === 'processed') this.processedStream = undefined
         if (label === 'confirmed') this.confirmedStream = undefined
@@ -727,6 +835,14 @@ export class BridgeServer {
     const max = this.config.grpcRetryMaxMs
     const exp = Math.min(max, base * 2 ** (attempt - 1))
     return Math.floor(Math.random() * exp)
+  }
+
+  private connectedClientIds() {
+    const ids: string[] = []
+    for (const session of this.sessions.values()) {
+      if (session.connected) ids.push(session.id)
+    }
+    return ids
   }
 
   private connectedCount() {

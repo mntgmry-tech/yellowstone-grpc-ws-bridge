@@ -3,12 +3,22 @@ services:
     build: .
     container_name: yellowstone-grpc-ws-bridge
     environment:
-      # Provide host:port OR a full URL with scheme (http:// / https://)
-      - YELLOWSTONE_GRPC_ENDPOINT=${YELLOWSTONE_GRPC_ENDPOINT}
+      - YELLOWSTONE_HOST=${YELLOWSTONE_HOST-127.0.0.1}
+      - YELLOWSTONE_GRPC_PORT=${YELLOWSTONE_GRPC_PORT-10000}
+      - YELLOWSTONE_RPC_PORT=${YELLOWSTONE_RPC_PORT-8899}
+      - YELLOWSTONE_GRPC_PROTOCOL=${YELLOWSTONE_GRPC_PROTOCOL-http}
+      - YELLOWSTONE_RPC_PROTOCOL=${YELLOWSTONE_RPC_PROTOCOL-http}
       # Optional. Leave empty for self-hosted gRPC endpoints if you don't require auth.
       - YELLOWSTONE_X_TOKEN=${YELLOWSTONE_X_TOKEN-}
       - WS_BIND=0.0.0.0
       - WS_PORT=8787
+      - HEALTH_BIND=0.0.0.0
+      - HEALTH_PORT=8788
+      - SOLANA_HEALTHCHECK_INTERVAL_MS=${SOLANA_HEALTHCHECK_INTERVAL_MS-30000}
+      - SOLANA_HEALTHCHECK_TIMEOUT_MS=${SOLANA_HEALTHCHECK_TIMEOUT_MS-5000}
+      - SOLANA_HEALTHCHECK_INTERVAL_UNHEALTHY_MS=${SOLANA_HEALTHCHECK_INTERVAL_UNHEALTHY_MS-1000}
+      - GRPC_REQUIRE_HEALTHY=${GRPC_REQUIRE_HEALTHY-true}
     ports:
       - '8787:8787'
+      - '8788:8788'
     restart: unless-stopped

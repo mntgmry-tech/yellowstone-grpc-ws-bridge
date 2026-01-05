@@ -38,6 +38,7 @@ type StatusEvent = {
   clientId?: string
   now: string
   grpcConnected: boolean
+  nodeHealthy: boolean
   processedHeadSlot?: number
   confirmedHeadSlot?: number
   watchedAccounts: number
