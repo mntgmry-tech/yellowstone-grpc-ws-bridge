@@ -5,7 +5,10 @@ import { BridgeServer } from './BridgeServer'
 import { MongoApiKeyStore } from './apiKeys'
 
 const start = async () => {
-  const apiKeyStore = new MongoApiKeyStore(env.mongoUri, env.mongoDb, env.mongoApiKeysCollection)
+  const apiKeyStore = new MongoApiKeyStore(env.mongoUri, env.mongoDb, env.mongoApiKeysCollection, {
+    cacheMaxSize: env.apiKeyCacheMaxSize,
+    lastUsedFlushMs: env.apiKeyLastUsedFlushMs
+  })
   await apiKeyStore.connect()
 
   const healthMonitor = new NodeHealthMonitor({

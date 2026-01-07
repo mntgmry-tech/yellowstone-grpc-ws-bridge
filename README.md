@@ -63,6 +63,8 @@ Environment variables:
 - `MONGO_URI` (default `mongodb://admin:admin@127.0.0.1:27017/?authSource=admin`)
 - `MONGO_DB` (default `yellowstone_bridge`)
 - `MONGO_API_KEYS_COLLECTION` (default `api_keys`)
+- `API_KEY_CACHE_MAX_SIZE` (default `100000`) max API key entries held in memory
+- `API_KEY_LAST_USED_FLUSH_MS` (default `15000`) batch interval for lastUsed updates
 - `BRIDGE_WS_URL` (client examples only, default `ws://127.0.0.1:8787`)
 - `BRIDGE_CLIENT_ID` (client examples only, optional resume token)
 - `BRIDGE_EVENT_FORMAT` (client examples only, `raw` or `enhanced`)

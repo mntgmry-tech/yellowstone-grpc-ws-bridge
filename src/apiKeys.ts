@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'crypto'
 import { Collection, Db, MongoClient, MongoServerError, ObjectId, WithId } from 'mongodb'
+import { SuperLRU } from 'superlru'
 
 export type ApiKeyRecord = {
   id: string
@@ -28,6 +29,11 @@ export type ApiKeyUpdateInput = {
   active?: boolean
 }
 
+export type ApiKeyStoreOptions = {
+  cacheMaxSize?: number
+  lastUsedFlushMs?: number
+}
+
 export interface ApiKeyStore {
   ready(): boolean
   connect(): Promise<void>
@@ -52,6 +58,17 @@ type ApiKeyDocument = {
 const DEFAULT_COLLECTION = 'api_keys'
 const API_KEY_BYTES = 32
 const API_KEY_RETRIES = 5
+const DEFAULT_CACHE_MAX_SIZE = 100000
+const DEFAULT_LAST_USED_FLUSH_MS = 15_000
+
+type CachedApiKey = {
+  id: string
+  apiKey: string
+  userId: string
+  userName: string
+  active: boolean
+  lastUsedAt?: number
+}
 
 const generateApiKey = () => randomBytes(API_KEY_BYTES).toString('hex')
 
@@ -65,11 +82,11 @@ const toRecord = (doc: WithId<ApiKeyDocument>): ApiKeyRecord => ({
   active: doc.active
 })
 
-const toAuth = (doc: WithId<ApiKeyDocument>): ApiKeyAuth => ({
-  id: doc._id.toHexString(),
-  userId: doc.userId,
-  userName: doc.userName,
-  active: doc.active
+const toAuthFromCache = (entry: CachedApiKey): ApiKeyAuth => ({
+  id: entry.id,
+  userId: entry.userId,
+  userName: entry.userName,
+  active: entry.active
 })
 
 const isDuplicateKeyError = (error: unknown) =>
@@ -82,13 +99,31 @@ export class MongoApiKeyStore implements ApiKeyStore {
   private db?: Db
   private collection?: Collection<ApiKeyDocument>
   private connected = false
+  private cache: SuperLRU<string, CachedApiKey>
+  private idToKey = new Map<string, string>()
+  private pendingLastUsed = new Map<string, number>()
+  private lastUsedTimer?: ReturnType<typeof setInterval>
+  private cacheMaxSize: number
+  private lastUsedFlushMs: number
 
   constructor(
     private uri: string,
     private dbName: string,
-    private collectionName: string = DEFAULT_COLLECTION
+    private collectionName: string = DEFAULT_COLLECTION,
+    options: ApiKeyStoreOptions = {}
   ) {
     this.client = new MongoClient(uri)
+    this.cacheMaxSize = options.cacheMaxSize ?? DEFAULT_CACHE_MAX_SIZE
+    this.lastUsedFlushMs = options.lastUsedFlushMs ?? DEFAULT_LAST_USED_FLUSH_MS
+    this.cache = new SuperLRU<string, CachedApiKey>({
+      maxSize: Math.max(1, this.cacheMaxSize),
+      compress: false,
+      encrypt: false,
+      onEvicted: (_key, value) => {
+        if (!value) return
+        this.idToKey.delete(value.id)
+      }
+    })
   }
 
   ready(): boolean {
@@ -102,9 +137,25 @@ export class MongoApiKeyStore implements ApiKeyStore {
     await this.collection.createIndex({ apiKey: 1 }, { unique: true })
     await this.collection.createIndex({ userId: 1 })
     this.connected = true
+    await this.primeCache()
+
+    if (this.lastUsedFlushMs > 0) {
+      this.lastUsedTimer = setInterval(() => {
+        void this.flushLastUsed()
+      }, this.lastUsedFlushMs)
+    }
   }
 
   async close(): Promise<void> {
+    if (this.lastUsedTimer) {
+      clearInterval(this.lastUsedTimer)
+      this.lastUsedTimer = undefined
+    }
+    try {
+      await this.flushLastUsed()
+    } catch (error) {
+      console.warn('[api-keys] failed to flush lastUsed on close', error)
+    }
     await this.client.close()
     this.connected = false
     this.collection = undefined
@@ -114,6 +165,7 @@ export class MongoApiKeyStore implements ApiKeyStore {
   async list(): Promise<ApiKeyRecord[]> {
     const collection = this.requireCollection()
     const docs = await collection.find({}).sort({ createdAt: -1 }).toArray()
+    await Promise.all(docs.map((doc) => this.upsertCacheFromDoc(doc)))
     return docs.map(toRecord)
   }
 
@@ -122,7 +174,9 @@ export class MongoApiKeyStore implements ApiKeyStore {
     const objectId = toObjectId(id)
     if (!objectId) return null
     const doc = await collection.findOne({ _id: objectId })
-    return doc ? toRecord(doc) : null
+    if (!doc) return null
+    await this.upsertCacheFromDoc(doc)
+    return toRecord(doc)
   }
 
   async create(input: ApiKeyCreateInput): Promise<ApiKeyRecord> {
@@ -142,7 +196,9 @@ export class MongoApiKeyStore implements ApiKeyStore {
           active
         }
         const result = await collection.insertOne(doc)
-        return toRecord({ ...doc, _id: result.insertedId })
+        const record = { ...doc, _id: result.insertedId }
+        await this.upsertCacheFromDoc(record)
+        return toRecord(record)
       } catch (error) {
         if (isDuplicateKeyError(error)) {
           apiKey = generateApiKey()
@@ -173,7 +229,9 @@ export class MongoApiKeyStore implements ApiKeyStore {
       { $set: patch },
       { returnDocument: 'after' }
     )
-    return result ? toRecord(result) : null
+    if (!result) return null
+    await this.upsertCacheFromDoc(result)
+    return toRecord(result)
   }
 
   async delete(id: string): Promise<boolean> {
@@ -181,19 +239,29 @@ export class MongoApiKeyStore implements ApiKeyStore {
     const objectId = toObjectId(id)
     if (!objectId) return false
     const result = await collection.deleteOne({ _id: objectId })
+    if (result.deletedCount > 0) {
+      await this.evictCacheById(id)
+      this.pendingLastUsed.delete(id)
+    }
     return result.deletedCount > 0
   }
 
   async validate(apiKey: string): Promise<ApiKeyAuth | null> {
     const collection = this.requireCollection()
-    const doc = await collection.findOne({ apiKey })
-    if (!doc || !doc.active) return null
-    try {
-      await collection.updateOne({ _id: doc._id }, { $set: { lastUsed: new Date() } })
-    } catch (error) {
-      console.warn('[api-keys] failed to update lastUsed', error)
+    const now = Date.now()
+    const cached = await this.cache.get(apiKey)
+    if (cached) {
+      if (!cached.active) return null
+      this.markLastUsed(cached, now)
+      return toAuthFromCache(cached)
     }
-    return toAuth(doc)
+
+    const doc = await collection.findOne({ apiKey })
+    if (!doc) return null
+    const entry = await this.upsertCacheFromDoc(doc)
+    if (!entry.active) return null
+    this.markLastUsed(entry, now)
+    return toAuthFromCache(entry)
   }
 
   private requireCollection(): Collection<ApiKeyDocument> {
@@ -201,5 +269,104 @@ export class MongoApiKeyStore implements ApiKeyStore {
       throw new Error('api key store not initialized')
     }
     return this.collection
+  }
+
+  private async primeCache() {
+    const collection = this.collection
+    if (!collection) return
+    try {
+      const docs = await collection.find({}).toArray()
+      await Promise.all(docs.map((doc) => this.upsertCacheFromDoc(doc)))
+      console.log(`[api-keys] cache primed size=${docs.length} maxSize=${this.cacheMaxSize}`)
+    } catch (error) {
+      console.warn('[api-keys] failed to prime cache', error)
+    }
+  }
+
+  private async upsertCacheFromDoc(doc: WithId<ApiKeyDocument>): Promise<CachedApiKey> {
+    const id = doc._id.toHexString()
+    const existingKey = this.idToKey.get(id)
+    let entry: CachedApiKey | null = null
+    if (existingKey) {
+      entry = await this.cache.get(existingKey)
+      if (existingKey !== doc.apiKey) {
+        await this.cache.unset(existingKey)
+      }
+    }
+
+    if (!entry) {
+      entry = {
+        id,
+        apiKey: doc.apiKey,
+        userId: doc.userId,
+        userName: doc.userName,
+        active: doc.active
+      }
+    }
+
+    entry.id = id
+    entry.apiKey = doc.apiKey
+    entry.userId = doc.userId
+    entry.userName = doc.userName
+    entry.active = doc.active
+
+    const docLastUsed = doc.lastUsed ? doc.lastUsed.getTime() : undefined
+    if (docLastUsed !== undefined) {
+      if (entry.lastUsedAt === undefined || docLastUsed > entry.lastUsedAt) {
+        entry.lastUsedAt = docLastUsed
+      }
+    }
+
+    await this.cache.set(entry.apiKey, entry)
+    this.idToKey.set(entry.id, entry.apiKey)
+    return entry
+  }
+
+  private async evictCacheById(id: string) {
+    const key = this.idToKey.get(id)
+    if (!key) return
+    await this.cache.unset(key)
+    this.idToKey.delete(id)
+  }
+
+  private markLastUsed(entry: CachedApiKey, now: number) {
+    entry.lastUsedAt = now
+    const pending = this.pendingLastUsed.get(entry.id)
+    if (!pending || now > pending) {
+      this.pendingLastUsed.set(entry.id, now)
+    }
+  }
+
+  private async flushLastUsed() {
+    const collection = this.collection
+    if (!collection) return
+    if (!this.pendingLastUsed.size) return
+    const updates: Array<{ id: string; ts: number; objectId: ObjectId }> = []
+    for (const [id, ts] of this.pendingLastUsed.entries()) {
+      const objectId = toObjectId(id)
+      if (!objectId) {
+        this.pendingLastUsed.delete(id)
+        continue
+      }
+      updates.push({ id, ts, objectId })
+    }
+    if (!updates.length) return
+
+    try {
+      await collection.bulkWrite(
+        updates.map((item) => ({
+          updateOne: {
+            filter: { _id: item.objectId },
+            update: { $set: { lastUsed: new Date(item.ts) } }
+          }
+        })),
+        { ordered: false }
+      )
+      for (const item of updates) {
+        this.pendingLastUsed.delete(item.id)
+      }
+    } catch (error) {
+      console.warn('[api-keys] failed to flush lastUsed', error)
+    }
   }
 }

@@ -85,6 +85,13 @@ const healthCheckIntervalUnhealthyMs =
 const healthPortRaw = parseInt(process.env.HEALTH_PORT ?? '8788', 10)
 const healthPort = Number.isFinite(healthPortRaw) && healthPortRaw > 0 ? healthPortRaw : 8788
 
+const apiKeyCacheMaxSizeRaw = parseInt(process.env.API_KEY_CACHE_MAX_SIZE ?? '100000', 10)
+const apiKeyCacheMaxSize =
+  Number.isFinite(apiKeyCacheMaxSizeRaw) && apiKeyCacheMaxSizeRaw > 0 ? apiKeyCacheMaxSizeRaw : 100000
+const apiKeyLastUsedFlushRaw = parseInt(process.env.API_KEY_LAST_USED_FLUSH_MS ?? '15000', 10)
+const apiKeyLastUsedFlushMs =
+  Number.isFinite(apiKeyLastUsedFlushRaw) && apiKeyLastUsedFlushRaw >= 0 ? apiKeyLastUsedFlushRaw : 15000
+
 const grpcEndpoint =
   legacyGrpcEndpoint && !hasExplicitHost && !hasExplicitGrpcPort
     ? legacyGrpcEndpoint
@@ -124,5 +131,7 @@ export const env = {
   xToken: process.env.YELLOWSTONE_X_TOKEN ?? '',
   mongoUri,
   mongoDb,
-  mongoApiKeysCollection
+  mongoApiKeysCollection,
+  apiKeyCacheMaxSize,
+  apiKeyLastUsedFlushMs
 }

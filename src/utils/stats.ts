@@ -40,6 +40,7 @@ export type StatsSnapshot = {
     pongs: { processed: number; confirmed: number }
     wsEvents: { status: number; transaction: number; total: number }
     wsMessages: { status: number; transaction: number; total: number }
+    authFailures: number
   }
   deltas: {
     tx: { processed: number; confirmed: number }
@@ -47,6 +48,7 @@ export type StatsSnapshot = {
     pongs: { processed: number; confirmed: number }
     wsEvents: { total: number }
     wsMessages: { total: number }
+    authFailures: number
   }
   last: {
     txAgeSec?: number
@@ -79,6 +81,7 @@ export class StatsTracker {
   private wsTransactionEvents = 0
   private wsStatusMessages = 0
   private wsTransactionMessages = 0
+  private authFailureCount = 0
 
   private lastProcessedSlotCount = 0
   private lastConfirmedSlotCount = 0
@@ -90,6 +93,7 @@ export class StatsTracker {
   private lastWsTransactionEvents = 0
   private lastWsStatusMessages = 0
   private lastWsTransactionMessages = 0
+  private lastAuthFailureCount = 0
 
   private pingSentAt = new Map<number, number>()
   private logFn: (line: string) => void
@@ -112,6 +116,10 @@ export class StatsTracker {
   recordSlot(commitment: CommitmentLabel) {
     if (commitment === 'processed') this.processedSlotCount += 1
     if (commitment === 'confirmed') this.confirmedSlotCount += 1
+  }
+
+  recordAuthFailure() {
+    this.authFailureCount += 1
   }
 
   recordTx(commitment: CommitmentLabel) {
@@ -171,6 +179,7 @@ export class StatsTracker {
 
     const wsEventsDelta = wsEventsTotal - lastWsEventsTotal
     const wsMessagesDelta = wsMessagesTotal - lastWsMessagesTotal
+    const authFailureDelta = this.authFailureCount - this.lastAuthFailureCount
     const rtt = this.lastPongRttMs !== undefined ? this.lastPongRttMs : undefined
     const blockMetaAgeSec = context.blockMetaUpdatedAt
       ? Math.floor((now - context.blockMetaUpdatedAt) / 1000)
@@ -210,14 +219,16 @@ export class StatsTracker {
           status: this.wsStatusMessages,
           transaction: this.wsTransactionMessages,
           total: wsMessagesTotal
-        }
+        },
+        authFailures: this.authFailureCount
       },
       deltas: {
         tx: { processed: procTxDelta, confirmed: confTxDelta },
         slots: { processed: procSlotDelta, confirmed: confSlotDelta },
         pongs: { processed: procPongDelta, confirmed: confPongDelta },
         wsEvents: { total: wsEventsDelta },
-        wsMessages: { total: wsMessagesDelta }
+        wsMessages: { total: wsMessagesDelta },
+        authFailures: authFailureDelta
       },
       last: {
         txAgeSec: this.ageSec(now, this.lastTxAt),
@@ -253,6 +264,8 @@ export class StatsTracker {
         `pongs_${snapshot.periodSec}s=proc:${snapshot.deltas.pongs.processed} conf:${snapshot.deltas.pongs.confirmed}`,
         `ws_events_${snapshot.periodSec}s=${snapshot.deltas.wsEvents.total}`,
         `ws_msgs_${snapshot.periodSec}s=${snapshot.deltas.wsMessages.total}`,
+        `auth_failures_total=${snapshot.totals.authFailures}`,
+        `auth_failures_${snapshot.periodSec}s=${snapshot.deltas.authFailures}`,
         `last_tx=${this.formatAge(now, this.lastTxAt)}`,
         `ping=${this.formatAge(now, this.lastPingAt)}(${this.lastPingId ?? '-'})`,
         `pong=${this.formatAge(now, this.lastPongAt)}(${this.lastPongId ?? '-'})`,
@@ -271,6 +284,7 @@ export class StatsTracker {
     this.lastWsTransactionEvents = this.wsTransactionEvents
     this.lastWsStatusMessages = this.wsStatusMessages
     this.lastWsTransactionMessages = this.wsTransactionMessages
+    this.lastAuthFailureCount = this.authFailureCount
   }
 
   private ageSec(now: number, t?: number) {

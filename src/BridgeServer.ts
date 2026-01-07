@@ -66,21 +66,32 @@ const grpcOptions = {
 }
 
 const bearerPattern = /^Bearer\s+(.+)$/i
+const apiKeyPattern = /^[a-f0-9]{64}$/i
+const maxAuthHeaderLength = 512
 
-const extractBearerToken = (request?: IncomingMessage): string | undefined => {
-  if (!request) return undefined
+type BearerTokenResult = {
+  token?: string
+  error?: string
+}
+
+const extractBearerToken = (request?: IncomingMessage): BearerTokenResult => {
+  if (!request) return { error: 'missing_request' }
   const header = request.headers.authorization
-  if (!header) return undefined
+  if (!header) return { error: 'missing_authorization' }
   const value = Array.isArray(header) ? header[0] : header
+  if (!value) return { error: 'empty_authorization' }
+  if (value.length > maxAuthHeaderLength) return { error: 'authorization_too_long' }
   const match = value.match(bearerPattern)
   let token = match?.[1]?.trim()
-  if (!token) return undefined
+  if (!token) return { error: 'invalid_scheme' }
   while (bearerPattern.test(token)) {
     const nested = token.match(bearerPattern)
     if (!nested?.[1]) break
     token = nested[1].trim()
   }
-  return token || undefined
+  if (!token) return { error: 'empty_token' }
+  if (!apiKeyPattern.test(token)) return { error: 'invalid_token_format' }
+  return { token }
 }
 
 type ClientSession = {
@@ -326,9 +337,19 @@ export class BridgeServer {
     }
   }
 
+  private formatAuthRemote(request?: IncomingMessage) {
+    const socket = request?.socket
+    const addr = socket?.remoteAddress ?? 'unknown'
+    const port = socket?.remotePort ?? '-'
+    return `${addr}:${port}`
+  }
+
   private verifyWsClient: VerifyClientCallbackAsync = (info, callback) => {
-    const token = extractBearerToken(info.req)
-    if (!token) {
+    const remote = this.formatAuthRemote(info.req)
+    const parsed = extractBearerToken(info.req)
+    if (!parsed.token) {
+      console.warn(`[ws] auth rejected reason=${parsed.error ?? 'missing_token'} remote=${remote}`)
+      this.stats.recordAuthFailure()
       callback(false, 401, 'unauthorized')
       return
     }
@@ -340,9 +361,11 @@ export class BridgeServer {
     }
 
     this.apiKeyStore
-      .validate(token)
+      .validate(parsed.token)
       .then((apiKey) => {
         if (!apiKey) {
+          console.warn(`[ws] auth rejected reason=invalid_api_key remote=${remote}`)
+          this.stats.recordAuthFailure()
           callback(false, 401, 'unauthorized')
           return
         }
@@ -350,7 +373,7 @@ export class BridgeServer {
         callback(true)
       })
       .catch((error) => {
-        console.warn('[ws] api key validation error:', error)
+        console.warn(`[ws] auth error remote=${remote}:`, error)
         callback(false, 500, 'auth_error')
       })
   }
