@@ -173,7 +173,7 @@ export class MongoApiKeyStore implements ApiKeyStore {
       { $set: patch },
       { returnDocument: 'after' }
     )
-    return result.value ? toRecord(result.value) : null
+    return result ? toRecord(result) : null
   }
 
   async delete(id: string): Promise<boolean> {
