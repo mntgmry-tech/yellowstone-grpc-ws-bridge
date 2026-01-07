@@ -1,8 +1,10 @@
+import { IncomingMessage } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
+import type { ServerOptions } from 'ws'
 import { ClientMsg, WsEvent } from '../types'
 
 type WsHubHandlers = {
-  onConnect?: (client: WebSocket) => void
+  onConnect?: (client: WebSocket, request?: IncomingMessage) => void
   onClose?: (client: WebSocket, code: number, reason: string) => void
   onMessage?: (client: WebSocket, msg: ClientMsg) => void
 }
@@ -24,13 +26,23 @@ export class WsHub {
   private clients = new Set<WebSocket>()
   private handlers: WsHubHandlers
 
-  constructor({ host, port, handlers }: { host: string; port: number; handlers: WsHubHandlers }) {
-    this.wss = new WebSocketServer({ host, port })
+  constructor({
+    host,
+    port,
+    handlers,
+    verifyClient
+  }: {
+    host: string
+    port: number
+    handlers: WsHubHandlers
+    verifyClient?: ServerOptions['verifyClient']
+  }) {
+    this.wss = new WebSocketServer({ host, port, verifyClient })
     this.handlers = handlers
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws, request) => {
       this.clients.add(ws)
-      this.handlers.onConnect?.(ws)
+      this.handlers.onConnect?.(ws, request)
 
       ws.on('message', (buf) => {
         const msg = safeJsonParse(buf.toString('utf8'))

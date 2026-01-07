@@ -1,6 +1,6 @@
 import BigNumber from 'bignumber.js'
 import bs58 from 'bs58'
-import { TokenBalanceChange } from '../types'
+import { YellowstoneTokenBalanceChange } from '../types'
 
 export function normalizePubkeyMaybe(b58: string): string | undefined {
   try {
@@ -48,6 +48,7 @@ function decodeAccountKeys(list: unknown): string[] {
 
 function collectAccountKeys(updateTxInfo: any): string[] {
   const message =
+    updateTxInfo?.message ??
     updateTxInfo?.transaction?.message ??
     updateTxInfo?.transaction?.transaction?.message ??
     updateTxInfo?.transaction?.transaction?.transaction?.message
@@ -57,9 +58,16 @@ function collectAccountKeys(updateTxInfo: any): string[] {
     updateTxInfo?.transaction?.transaction?.meta ??
     updateTxInfo?.transaction?.transaction?.transaction?.meta
 
-  const baseKeys = decodeAccountKeys(message?.accountKeys ?? message?.account_keys ?? [])
-  const loadedWritable = decodeAccountKeys(meta?.loadedWritableAddresses ?? meta?.loaded_writable_addresses ?? [])
-  const loadedReadonly = decodeAccountKeys(meta?.loadedReadonlyAddresses ?? meta?.loaded_readonly_addresses ?? [])
+  const messageValue = message ?? updateTxInfo
+  const metaValue = meta ?? updateTxInfo
+
+  const baseKeys = decodeAccountKeys(messageValue?.accountKeys ?? messageValue?.account_keys ?? [])
+  const loadedWritable = decodeAccountKeys(
+    metaValue?.loadedWritableAddresses ?? metaValue?.loaded_writable_addresses ?? []
+  )
+  const loadedReadonly = decodeAccountKeys(
+    metaValue?.loadedReadonlyAddresses ?? metaValue?.loaded_readonly_addresses ?? []
+  )
 
   return [...baseKeys, ...loadedWritable, ...loadedReadonly]
 }
@@ -83,7 +91,7 @@ function formatUiAmount(amount: string, decimals: number): string {
   }
 }
 
-export function extractTokenBalanceChanges(updateTxInfo: any): TokenBalanceChange[] {
+export function extractTokenBalanceChanges(updateTxInfo: any): YellowstoneTokenBalanceChange[] {
   const meta =
     updateTxInfo?.meta ??
     updateTxInfo?.transaction?.meta ??
@@ -107,7 +115,7 @@ export function extractTokenBalanceChanges(updateTxInfo: any): TokenBalanceChang
     byIndexMint.set(key, existing)
   }
 
-  const changes: TokenBalanceChange[] = []
+  const changes: YellowstoneTokenBalanceChange[] = []
   for (const [, v] of byIndexMint) {
     const preAmt = v.pre?.uiTokenAmount?.amount ?? v.pre?.ui_token_amount?.amount ?? '0'
     const postAmt = v.post?.uiTokenAmount?.amount ?? v.post?.ui_token_amount?.amount ?? '0'
@@ -120,10 +128,12 @@ export function extractTokenBalanceChanges(updateTxInfo: any): TokenBalanceChang
 
     if (String(preAmt) === String(postAmt)) continue
 
-    const accountIndex =
+    const accountIndexValue =
       v.post?.accountIndex ?? v.post?.account_index ?? v.pre?.accountIndex ?? v.pre?.account_index ?? undefined
+    const accountIndex =
+      typeof accountIndexValue === 'number' ? accountIndexValue : Number.parseInt(String(accountIndexValue), 10)
     const account =
-      typeof accountIndex === 'number' && accountIndex >= 0 && accountIndex < accountKeys.length
+      Number.isFinite(accountIndex) && accountIndex >= 0 && accountIndex < accountKeys.length
         ? accountKeys[accountIndex]
         : ''
     const mint = v.post?.mint ?? v.pre?.mint ?? ''
@@ -152,7 +162,7 @@ export function extractTokenBalanceChanges(updateTxInfo: any): TokenBalanceChang
 }
 
 export function filterTokenBalanceChanges(
-  changes: TokenBalanceChange[],
+  changes: YellowstoneTokenBalanceChange[],
   watchedAccounts: Set<string>,
   watchedMints: Set<string>
 ) {
@@ -160,13 +170,15 @@ export function filterTokenBalanceChanges(
   if (watchedAccounts.size === 0 && watchedMints.size === 0) return []
   return changes.filter(
     (change) =>
-      (change.account && watchedAccounts.has(change.account)) || (change.mint && watchedMints.has(change.mint))
+      (change.account && watchedAccounts.has(change.account)) ||
+      (change.owner && watchedAccounts.has(change.owner)) ||
+      (change.mint && watchedMints.has(change.mint))
   )
 }
 
 export function matchesWatchlist(
   accounts: string[],
-  changes: TokenBalanceChange[],
+  changes: YellowstoneTokenBalanceChange[],
   watchedAccounts: Set<string>,
   watchedMints: Set<string>
 ) {
@@ -176,6 +188,7 @@ export function matchesWatchlist(
   }
   for (const change of changes) {
     if (change.account && watchedAccounts.has(change.account)) return true
+    if (change.owner && watchedAccounts.has(change.owner)) return true
     if (change.mint && watchedMints.has(change.mint)) return true
   }
   return false
