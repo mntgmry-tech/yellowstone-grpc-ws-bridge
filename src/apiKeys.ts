@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'crypto'
-import { Collection, Db, MongoClient, MongoServerError, ObjectId, WithId } from 'mongodb'
+import { Collection, MongoServerError, ObjectId, WithId } from 'mongodb'
 import { SuperLRU } from 'superlru'
 
 export type ApiKeyRecord = {
@@ -46,7 +46,7 @@ export interface ApiKeyStore {
   validate(apiKey: string): Promise<ApiKeyAuth | null>
 }
 
-type ApiKeyDocument = {
+export type ApiKeyDocument = {
   userId: string
   userName: string
   apiKey: string
@@ -55,7 +55,6 @@ type ApiKeyDocument = {
   active: boolean
 }
 
-const DEFAULT_COLLECTION = 'api_keys'
 const API_KEY_BYTES = 32
 const API_KEY_RETRIES = 5
 const DEFAULT_CACHE_MAX_SIZE = 100000
@@ -95,9 +94,7 @@ const isDuplicateKeyError = (error: unknown) =>
 const toObjectId = (id: string): ObjectId | null => (ObjectId.isValid(id) ? new ObjectId(id) : null)
 
 export class MongoApiKeyStore implements ApiKeyStore {
-  private client: MongoClient
-  private db?: Db
-  private collection?: Collection<ApiKeyDocument>
+  private collection: Collection<ApiKeyDocument>
   private connected = false
   private cache: SuperLRU<string, CachedApiKey>
   private idToKey = new Map<string, string>()
@@ -107,12 +104,10 @@ export class MongoApiKeyStore implements ApiKeyStore {
   private lastUsedFlushMs: number
 
   constructor(
-    private uri: string,
-    private dbName: string,
-    private collectionName: string = DEFAULT_COLLECTION,
+    collection: Collection<ApiKeyDocument>,
     options: ApiKeyStoreOptions = {}
   ) {
-    this.client = new MongoClient(uri)
+    this.collection = collection
     this.cacheMaxSize = options.cacheMaxSize ?? DEFAULT_CACHE_MAX_SIZE
     this.lastUsedFlushMs = options.lastUsedFlushMs ?? DEFAULT_LAST_USED_FLUSH_MS
     this.cache = new SuperLRU<string, CachedApiKey>({
@@ -127,17 +122,15 @@ export class MongoApiKeyStore implements ApiKeyStore {
   }
 
   ready(): boolean {
-    return this.connected && Boolean(this.collection)
+    return this.connected
   }
 
   async connect(): Promise<void> {
-    await this.client.connect()
-    this.db = this.client.db(this.dbName)
-    this.collection = this.db.collection<ApiKeyDocument>(this.collectionName)
+    if (this.connected) return
     await this.collection.createIndex({ apiKey: 1 }, { unique: true })
     await this.collection.createIndex({ userId: 1 })
-    this.connected = true
     await this.primeCache()
+    this.connected = true
 
     if (this.lastUsedFlushMs > 0) {
       this.lastUsedTimer = setInterval(() => {
@@ -156,10 +149,7 @@ export class MongoApiKeyStore implements ApiKeyStore {
     } catch (error) {
       console.warn('[api-keys] failed to flush lastUsed on close', error)
     }
-    await this.client.close()
     this.connected = false
-    this.collection = undefined
-    this.db = undefined
   }
 
   async list(): Promise<ApiKeyRecord[]> {
@@ -265,17 +255,15 @@ export class MongoApiKeyStore implements ApiKeyStore {
   }
 
   private requireCollection(): Collection<ApiKeyDocument> {
-    if (!this.collection) {
+    if (!this.connected) {
       throw new Error('api key store not initialized')
     }
     return this.collection
   }
 
   private async primeCache() {
-    const collection = this.collection
-    if (!collection) return
     try {
-      const docs = await collection.find({}).toArray()
+      const docs = await this.collection.find({}).toArray()
       await Promise.all(docs.map((doc) => this.upsertCacheFromDoc(doc)))
       console.log(`[api-keys] cache primed size=${docs.length} maxSize=${this.cacheMaxSize}`)
     } catch (error) {

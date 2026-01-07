@@ -2,10 +2,21 @@ import { HealthServer } from './HealthServer'
 import { NodeHealthMonitor } from './NodeHealthMonitor'
 import { env } from './env'
 import { BridgeServer } from './BridgeServer'
-import { MongoApiKeyStore } from './apiKeys'
+import { ApiKeyDocument, MongoApiKeyStore } from './apiKeys'
+import { MongoPoolManager } from './utils/mongoPoolManager'
 
 const start = async () => {
-  const apiKeyStore = new MongoApiKeyStore(env.mongoUri, env.mongoDb, env.mongoApiKeysCollection, {
+  MongoPoolManager.initialize({
+    uri: env.mongoUri,
+    dbName: env.mongoDb,
+    connectTimeoutMs: env.mongoConnectTimeoutMs,
+    socketTimeoutMs: env.mongoSocketTimeoutMs,
+    maxPoolSize: env.mongoMaxPoolSize,
+    minPoolSize: env.mongoMinPoolSize
+  })
+  const mongoPool = MongoPoolManager.getInstance()
+  const apiKeyCollection = await mongoPool.createCollection<ApiKeyDocument>(env.mongoApiKeysCollection)
+  const apiKeyStore = new MongoApiKeyStore(apiKeyCollection, {
     cacheMaxSize: env.apiKeyCacheMaxSize,
     lastUsedFlushMs: env.apiKeyLastUsedFlushMs
   })
@@ -54,6 +65,31 @@ const start = async () => {
   healthMonitor.start()
   server.start()
   healthServer.start()
+
+  let shuttingDown = false
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[shutdown] received ${signal}, closing resources...`)
+    try {
+      await apiKeyStore.close()
+    } catch (error) {
+      console.error('[shutdown] failed to close api key store', error)
+    }
+    try {
+      await MongoPoolManager.getInstance().close()
+    } catch (error) {
+      console.error('[shutdown] failed to close mongo pool', error)
+    }
+    process.exit(0)
+  }
+
+  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGQUIT']
+  signals.forEach((signal) => {
+    process.on(signal, () => {
+      void shutdown(signal)
+    })
+  })
 }
 
 start().catch((error) => {

@@ -105,6 +105,19 @@ const mongoUri = process.env.MONGO_URI ?? 'mongodb://admin:admin@127.0.0.1:27017
 const mongoDb = process.env.MONGO_DB ?? 'yellowstone_bridge'
 const mongoApiKeysCollection = process.env.MONGO_API_KEYS_COLLECTION ?? 'api_keys'
 
+const mongoConnectTimeoutRaw = parseInt(process.env.MONGO_CONNECT_TIMEOUT_MS ?? '10000', 10)
+const mongoConnectTimeoutMs =
+  Number.isFinite(mongoConnectTimeoutRaw) && mongoConnectTimeoutRaw > 0 ? mongoConnectTimeoutRaw : 10000
+const mongoSocketTimeoutRaw = parseInt(process.env.MONGO_SOCKET_TIMEOUT_MS ?? '10000', 10)
+const mongoSocketTimeoutMs =
+  Number.isFinite(mongoSocketTimeoutRaw) && mongoSocketTimeoutRaw > 0 ? mongoSocketTimeoutRaw : 10000
+const mongoMaxPoolSizeRaw = parseInt(process.env.MONGO_MAX_POOL_SIZE ?? '10', 10)
+const mongoMaxPoolSize =
+  Number.isFinite(mongoMaxPoolSizeRaw) && mongoMaxPoolSizeRaw > 0 ? mongoMaxPoolSizeRaw : 10
+const mongoMinPoolSizeRaw = parseInt(process.env.MONGO_MIN_POOL_SIZE ?? '0', 10)
+const mongoMinPoolSize =
+  Number.isFinite(mongoMinPoolSizeRaw) && mongoMinPoolSizeRaw >= 0 ? mongoMinPoolSizeRaw : 0
+
 export const env = {
   wsBind: process.env.WS_BIND ?? '0.0.0.0',
   wsPort: parseInt(process.env.WS_PORT ?? '8787', 10),
@@ -132,6 +145,10 @@ export const env = {
   mongoUri,
   mongoDb,
   mongoApiKeysCollection,
+  mongoConnectTimeoutMs,
+  mongoSocketTimeoutMs,
+  mongoMaxPoolSize,
+  mongoMinPoolSize,
   apiKeyCacheMaxSize,
   apiKeyLastUsedFlushMs
 }
