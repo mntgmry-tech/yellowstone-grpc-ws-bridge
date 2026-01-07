@@ -63,6 +63,10 @@ Environment variables:
 - `MONGO_URI` (default `mongodb://admin:admin@127.0.0.1:27017/?authSource=admin`)
 - `MONGO_DB` (default `yellowstone_bridge`)
 - `MONGO_API_KEYS_COLLECTION` (default `api_keys`)
+- `MONGO_CONNECT_TIMEOUT_MS` (default `10000`)
+- `MONGO_SOCKET_TIMEOUT_MS` (default `10000`)
+- `MONGO_MAX_POOL_SIZE` (default `10`)
+- `MONGO_MIN_POOL_SIZE` (default `0`)
 - `API_KEY_CACHE_MAX_SIZE` (default `100000`) max API key entries held in memory
 - `API_KEY_LAST_USED_FLUSH_MS` (default `15000`) batch interval for lastUsed updates
 - `BRIDGE_WS_URL` (client examples only, default `ws://127.0.0.1:8787`)
