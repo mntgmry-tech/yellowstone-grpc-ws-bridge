@@ -8,6 +8,54 @@ export type StatsContext = {
   confirmedConnected: boolean
   processedHeadSlot?: number
   confirmedHeadSlot?: number
+  blockMetaSlot?: number
+  blockMetaTime?: number | null
+  blockMetaUpdatedAt?: number
+}
+
+export type StatsSnapshot = {
+  now: string
+  uptimeSec: number
+  periodSec: number
+  clients: number
+  watchedAccounts: number
+  watchedMints: number
+  grpc: {
+    processedConnected: boolean
+    confirmedConnected: boolean
+  }
+  headSlots: {
+    processed?: number
+    confirmed?: number
+  }
+  blockMeta: {
+    slot?: number
+    blockTime?: number | null
+    updatedAt?: string
+    ageSec?: number
+  }
+  totals: {
+    tx: { processed: number; confirmed: number }
+    slots: { processed: number; confirmed: number }
+    pongs: { processed: number; confirmed: number }
+    wsEvents: { status: number; transaction: number; total: number }
+    wsMessages: { status: number; transaction: number; total: number }
+  }
+  deltas: {
+    tx: { processed: number; confirmed: number }
+    slots: { processed: number; confirmed: number }
+    pongs: { processed: number; confirmed: number }
+    wsEvents: { total: number }
+    wsMessages: { total: number }
+  }
+  last: {
+    txAgeSec?: number
+    pingAgeSec?: number
+    pongAgeSec?: number
+    pingId?: number
+    pongId?: number
+    rttMs?: number
+  }
 }
 
 export class StatsTracker {
@@ -105,8 +153,7 @@ export class StatsTracker {
     }, intervalMs)
   }
 
-  private logSnapshot(context: StatsContext) {
-    const now = Date.now()
+  getSnapshot(context: StatsContext, now = Date.now()): StatsSnapshot {
     const uptimeSec = Math.floor((now - this.statsStartedAt) / 1000)
     const periodSec = Math.max(1, Math.round((now - this.lastLogAt) / 1000))
 
@@ -124,21 +171,88 @@ export class StatsTracker {
 
     const wsEventsDelta = wsEventsTotal - lastWsEventsTotal
     const wsMessagesDelta = wsMessagesTotal - lastWsMessagesTotal
-    const rtt = this.lastPongRttMs !== undefined ? `${this.lastPongRttMs}ms` : 'n/a'
+    const rtt = this.lastPongRttMs !== undefined ? this.lastPongRttMs : undefined
+    const blockMetaAgeSec = context.blockMetaUpdatedAt
+      ? Math.floor((now - context.blockMetaUpdatedAt) / 1000)
+      : undefined
+
+    return {
+      now: new Date(now).toISOString(),
+      uptimeSec,
+      periodSec,
+      clients: context.clients,
+      watchedAccounts: context.watchedAccounts,
+      watchedMints: context.watchedMints,
+      grpc: {
+        processedConnected: context.processedConnected,
+        confirmedConnected: context.confirmedConnected
+      },
+      headSlots: {
+        processed: context.processedHeadSlot,
+        confirmed: context.confirmedHeadSlot
+      },
+      blockMeta: {
+        slot: context.blockMetaSlot,
+        blockTime: context.blockMetaTime ?? undefined,
+        updatedAt: context.blockMetaUpdatedAt ? new Date(context.blockMetaUpdatedAt).toISOString() : undefined,
+        ageSec: blockMetaAgeSec
+      },
+      totals: {
+        tx: { processed: this.processedTxCount, confirmed: this.confirmedTxCount },
+        slots: { processed: this.processedSlotCount, confirmed: this.confirmedSlotCount },
+        pongs: { processed: this.processedPongCount, confirmed: this.confirmedPongCount },
+        wsEvents: {
+          status: this.wsStatusEvents,
+          transaction: this.wsTransactionEvents,
+          total: wsEventsTotal
+        },
+        wsMessages: {
+          status: this.wsStatusMessages,
+          transaction: this.wsTransactionMessages,
+          total: wsMessagesTotal
+        }
+      },
+      deltas: {
+        tx: { processed: procTxDelta, confirmed: confTxDelta },
+        slots: { processed: procSlotDelta, confirmed: confSlotDelta },
+        pongs: { processed: procPongDelta, confirmed: confPongDelta },
+        wsEvents: { total: wsEventsDelta },
+        wsMessages: { total: wsMessagesDelta }
+      },
+      last: {
+        txAgeSec: this.ageSec(now, this.lastTxAt),
+        pingAgeSec: this.ageSec(now, this.lastPingAt),
+        pongAgeSec: this.ageSec(now, this.lastPongAt),
+        pingId: this.lastPingId,
+        pongId: this.lastPongId,
+        rttMs: rtt
+      }
+    }
+  }
+
+  private logSnapshot(context: StatsContext) {
+    const now = Date.now()
+    const snapshot = this.getSnapshot(context, now)
+    const rtt = snapshot.last.rttMs !== undefined ? `${snapshot.last.rttMs}ms` : 'n/a'
+    const blockMetaSlot = snapshot.blockMeta.slot ?? '-'
+    const blockMetaTime = snapshot.blockMeta.blockTime ?? '-'
 
     this.logFn(
       [
-        `[stats] up=${uptimeSec}s`,
-        `clients=${context.clients}`,
-        `watched=${context.watchedAccounts}/${context.watchedMints}`,
-        `grpc=proc:${context.processedConnected ? 'on' : 'off'} conf:${context.confirmedConnected ? 'on' : 'off'}`,
-        `head=${context.processedHeadSlot ?? '-'} / ${context.confirmedHeadSlot ?? '-'}`,
-        `tx_total=proc:${this.processedTxCount} conf:${this.confirmedTxCount}`,
-        `tx_${periodSec}s=proc:${procTxDelta} conf:${confTxDelta}`,
-        `slots_${periodSec}s=proc:${procSlotDelta} conf:${confSlotDelta}`,
-        `pongs_${periodSec}s=proc:${procPongDelta} conf:${confPongDelta}`,
-        `ws_events_${periodSec}s=${wsEventsDelta}`,
-        `ws_msgs_${periodSec}s=${wsMessagesDelta}`,
+        `[stats] up=${snapshot.uptimeSec}s`,
+        `clients=${snapshot.clients}`,
+        `watched=${snapshot.watchedAccounts}/${snapshot.watchedMints}`,
+        `grpc=proc:${snapshot.grpc.processedConnected ? 'on' : 'off'} conf:${
+          snapshot.grpc.confirmedConnected ? 'on' : 'off'
+        }`,
+        `head=${snapshot.headSlots.processed ?? '-'} / ${snapshot.headSlots.confirmed ?? '-'}`,
+        `block_meta=${blockMetaSlot}@${blockMetaTime}`,
+        `tx_total=proc:${snapshot.totals.tx.processed} conf:${snapshot.totals.tx.confirmed}`,
+        `tx_${snapshot.periodSec}s=proc:${snapshot.deltas.tx.processed} conf:${snapshot.deltas.tx.confirmed}`,
+        `slots_${snapshot.periodSec}s=proc:${snapshot.deltas.slots.processed} conf:${snapshot.deltas.slots.confirmed}`,
+        `pongs_${snapshot.periodSec}s=proc:${snapshot.deltas.pongs.processed} conf:${snapshot.deltas.pongs.confirmed}`,
+        `ws_events_${snapshot.periodSec}s=${snapshot.deltas.wsEvents.total}`,
+        `ws_msgs_${snapshot.periodSec}s=${snapshot.deltas.wsMessages.total}`,
         `last_tx=${this.formatAge(now, this.lastTxAt)}`,
         `ping=${this.formatAge(now, this.lastPingAt)}(${this.lastPingId ?? '-'})`,
         `pong=${this.formatAge(now, this.lastPongAt)}(${this.lastPongId ?? '-'})`,
@@ -157,6 +271,11 @@ export class StatsTracker {
     this.lastWsTransactionEvents = this.wsTransactionEvents
     this.lastWsStatusMessages = this.wsStatusMessages
     this.lastWsTransactionMessages = this.wsTransactionMessages
+  }
+
+  private ageSec(now: number, t?: number) {
+    if (!t) return undefined
+    return Math.max(0, Math.floor((now - t) / 1000))
   }
 
   private formatAge(now: number, t?: number) {

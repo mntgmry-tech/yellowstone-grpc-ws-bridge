@@ -8,6 +8,16 @@ export type NodeHealthStatus = {
   lastError?: string
 }
 
+export type NodeHealthMetrics = {
+  checks: number
+  ok: number
+  errors: number
+  lastDurationMs?: number
+  avgDurationMs?: number
+  minDurationMs?: number
+  maxDurationMs?: number
+}
+
 type NodeHealthConfig = {
   rpcEndpoint: string
   intervalMs: number
@@ -25,6 +35,13 @@ export class NodeHealthMonitor {
   private intervalMs: number
   private timeoutMs: number
   private listeners = new Set<NodeHealthListener>()
+  private checks = 0
+  private okCount = 0
+  private errorCount = 0
+  private totalDurationMs = 0
+  private minDurationMs?: number
+  private maxDurationMs?: number
+  private lastDurationMs?: number
 
   constructor(private config: NodeHealthConfig) {
     const timeoutMs =
@@ -102,6 +119,20 @@ export class NodeHealthMonitor {
     return { ...this.status }
   }
 
+  getMetrics(): NodeHealthMetrics {
+    const avg =
+      this.checks > 0 ? Math.round((this.totalDurationMs / this.checks) * 100) / 100 : undefined
+    return {
+      checks: this.checks,
+      ok: this.okCount,
+      errors: this.errorCount,
+      lastDurationMs: this.lastDurationMs,
+      avgDurationMs: avg,
+      minDurationMs: this.minDurationMs,
+      maxDurationMs: this.maxDurationMs
+    }
+  }
+
   private async checkNow() {
     if (this.inFlight) return
     this.inFlight = true
@@ -116,6 +147,7 @@ export class NodeHealthMonitor {
       })
       const ok = response.data?.result === 'ok'
       const durationMs = Date.now() - startedAt
+      this.recordDuration(durationMs, ok)
       if (ok) {
         this.status = {
           ...this.status,
@@ -139,8 +171,8 @@ export class NodeHealthMonitor {
       }
       console.warn(`[health] rpc unhealthy endpoint=${this.config.rpcEndpoint} durationMs=${durationMs} error="${error}"`)
     } catch (err) {
-      const durationMs = Date.now() - startedAt
       const error = this.formatError(err)
+      this.recordDuration(Date.now() - startedAt, false)
       this.status = {
         ...this.status,
         ok: false,
@@ -148,7 +180,9 @@ export class NodeHealthMonitor {
         lastErrorAt: now,
         lastError: error
       }
-      console.warn(`[health] rpc unhealthy endpoint=${this.config.rpcEndpoint} durationMs=${durationMs} error="${error}"`)
+      console.warn(
+        `[health] rpc unhealthy endpoint=${this.config.rpcEndpoint} durationMs=${this.lastDurationMs ?? 0} error="${error}"`
+      )
     } finally {
       this.inFlight = false
       this.emitStatus()
@@ -180,6 +214,23 @@ export class NodeHealthMonitor {
       return JSON.stringify(value)
     } catch {
       return String(value)
+    }
+  }
+
+  private recordDuration(durationMs: number, ok: boolean) {
+    this.checks += 1
+    if (ok) {
+      this.okCount += 1
+    } else {
+      this.errorCount += 1
+    }
+    this.lastDurationMs = durationMs
+    this.totalDurationMs += durationMs
+    if (this.minDurationMs === undefined || durationMs < this.minDurationMs) {
+      this.minDurationMs = durationMs
+    }
+    if (this.maxDurationMs === undefined || durationMs > this.maxDurationMs) {
+      this.maxDurationMs = durationMs
     }
   }
 

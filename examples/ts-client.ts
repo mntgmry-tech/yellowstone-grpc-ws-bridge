@@ -4,8 +4,12 @@ import { WebSocket } from 'ws'
 dotenv.config()
 
 const WS_URL = process.env.BRIDGE_WS_URL ?? 'ws://127.0.0.1:8787'
-const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? ''
+const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? 'da9bf3cd-45a0-4c1a-bbd7-5aadc5d99709'
+const API_KEY = process.env.BRIDGE_API_KEY ?? 'c22eb1a5eec0ef0a35aa8a14d7b96f76f5dcf4bd42c19d21b06722e061b5198f'
 const MAX_PAYLOAD = 64 * 1024 * 1024
+const EVENT_FORMAT = process.env.BRIDGE_EVENT_FORMAT ?? 'enhanced'
+const FILTER_TOKEN_BALANCES =
+  (process.env.BRIDGE_FILTER_TOKEN_BALANCES ?? '').toLowerCase() === 'false'
 
 const INCLUDE_ACCOUNTS = true
 const INCLUDE_TOKEN_BALANCE_CHANGES = true
@@ -29,6 +33,8 @@ type ClientMsg =
       includeAccounts?: boolean
       includeTokenBalanceChanges?: boolean
       includeLogs?: boolean
+      eventFormat?: 'raw' | 'enhanced'
+      filterTokenBalances?: boolean
     }
   | { op: 'getState' }
   | { op: 'ping' }
@@ -45,7 +51,23 @@ type StatusEvent = {
   watchedMints: number
 }
 
-type TokenBalanceChange = {
+type NativeTransfer = {
+  fromUserAccount: string
+  toUserAccount: string
+  amount: number
+}
+
+type TokenTransfer = {
+  fromTokenAccount: string
+  toTokenAccount: string
+  fromUserAccount: string
+  toUserAccount: string
+  tokenAmount: number
+  mint: string
+  tokenStandard: string
+}
+
+type RawTokenBalanceChange = {
   account: string
   mint: string
   owner?: string
@@ -58,21 +80,74 @@ type TokenBalanceChange = {
   deltaUi: string
 }
 
+type RawTokenAmount = {
+  tokenAmount: string
+  decimals: number
+}
+
+type AccountTokenBalanceChange = {
+  userAccount: string
+  tokenAccount: string
+  rawTokenAmount: RawTokenAmount
+  mint: string
+}
+
+type AccountData = {
+  account: string
+  nativeBalanceChange: number
+  tokenBalanceChanges: AccountTokenBalanceChange[]
+}
+
+type InnerInstruction = {
+  programId: string
+  accounts: string[]
+  data: string
+}
+
+type Instruction = {
+  programId: string
+  accounts: string[]
+  data: string
+  innerInstructions: InnerInstruction[]
+}
+
 type TransactionEvent = {
+  type: 'transaction'
+  commitment: 'processed' | 'confirmed'
+  slot: number
+  signature: string
+  timestamp: number | null
+  isVote: boolean
+  index: number
+  err: object | null
+  fee: number
+  feePayer: string
+  accounts?: string[]
+  nativeTransfers: NativeTransfer[]
+  tokenTransfers: TokenTransfer[]
+  accountData: AccountData[]
+  instructions: Instruction[]
+  logs?: string[]
+  computeUnitsConsumed: number
+}
+
+type RawTransactionEvent = {
   type: 'transaction'
   commitment: 'processed' | 'confirmed'
   slot: number
   signature: string
   isVote: boolean
   index: number
-  err: unknown
+  err: object | null
   accounts?: string[]
-  tokenBalanceChanges?: TokenBalanceChange[]
+  tokenBalanceChanges?: RawTokenBalanceChange[]
   logs?: string[]
-  computeUnitsConsumed?: number
+  computeUnitsConsumed: number
 }
 
-type WsEvent = StatusEvent | TransactionEvent
+type EnhancedTransactionEvent = TransactionEvent
+
+type WsEvent = StatusEvent | RawTransactionEvent | EnhancedTransactionEvent
 
 function send(ws: WebSocket, msg: ClientMsg) {
   ws.send(JSON.stringify(msg))
@@ -80,7 +155,24 @@ function send(ws: WebSocket, msg: ClientMsg) {
 
 let lastClientId: string | undefined
 
-const ws = new WebSocket(WS_URL, { maxPayload: MAX_PAYLOAD })
+const normalizedFormat = EVENT_FORMAT.toLowerCase()
+const eventFormat =
+  normalizedFormat === 'raw' || normalizedFormat === 'enhanced' ? normalizedFormat : undefined
+
+let wsUrl = WS_URL
+if (eventFormat) {
+  try {
+    const parsed = new URL(WS_URL)
+    parsed.searchParams.set('format', eventFormat)
+    wsUrl = parsed.toString()
+  } catch {
+    wsUrl = WS_URL
+  }
+}
+
+const normalizedApiKey = API_KEY.trim().replace(/^Bearer\\s+/i, '')
+const headers = normalizedApiKey ? { Authorization: `Bearer ${normalizedApiKey}` } : undefined
+const ws = new WebSocket(wsUrl, { maxPayload: MAX_PAYLOAD, headers })
 
 ws.on('open', () => {
   if (CLIENT_ID) send(ws, { op: 'resume', clientId: CLIENT_ID })
@@ -88,7 +180,9 @@ ws.on('open', () => {
     op: 'setOptions',
     includeAccounts: INCLUDE_ACCOUNTS,
     includeTokenBalanceChanges: INCLUDE_TOKEN_BALANCE_CHANGES,
-    includeLogs: INCLUDE_LOGS
+    includeLogs: INCLUDE_LOGS,
+    eventFormat,
+    filterTokenBalances: FILTER_TOKEN_BALANCES
   })
   if (WATCH_ACCOUNTS.length) send(ws, { op: 'setAccounts', accounts: WATCH_ACCOUNTS })
   if (WATCH_MINTS.length) send(ws, { op: 'setMints', mints: WATCH_MINTS })
