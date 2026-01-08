@@ -143,6 +143,7 @@ const defaultClientOptions: ClientOptions = {
   includeAccounts: true,
   includeTokenBalanceChanges: true,
   includeLogs: false,
+  includeInstructions: false,
   eventFormat: 'raw',
   filterTokenBalances: false
 }
@@ -612,6 +613,7 @@ export class BridgeServer {
       includeAccounts?: boolean
       includeTokenBalanceChanges?: boolean
       includeLogs?: boolean
+      includeInstructions?: boolean
       eventFormat?: EventFormat
       filterTokenBalances?: boolean
     }
@@ -621,6 +623,7 @@ export class BridgeServer {
       session.options.includeTokenBalanceChanges = msg.includeTokenBalanceChanges
     }
     if (typeof msg.includeLogs === 'boolean') session.options.includeLogs = msg.includeLogs
+    if (typeof msg.includeInstructions === 'boolean') session.options.includeInstructions = msg.includeInstructions
     if (msg.eventFormat) {
       const format = this.normalizeEventFormat(msg.eventFormat)
       if (format) session.options.eventFormat = format
@@ -760,7 +763,8 @@ export class BridgeServer {
       accounts: session.options.includeAccounts ? accounts : undefined,
       tokenTransfers,
       accountData,
-      logs: session.options.includeLogs ? event.logs : undefined
+      logs: session.options.includeLogs ? event.logs : undefined,
+      instructions: session.options.includeInstructions ? event.instructions : undefined
     }
   }
 

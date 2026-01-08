@@ -22,7 +22,7 @@ Send JSON control messages after connecting:
 {"op":"setMints","mints":["<mint>","..."]}
 {"op":"addMints","mints":["<mint>","..."]}
 {"op":"removeMints","mints":["<mint>","..."]}
-{"op":"setOptions","includeAccounts":true,"includeTokenBalanceChanges":true,"includeLogs":false,"eventFormat":"raw|enhanced","filterTokenBalances":false}
+{"op":"setOptions","includeAccounts":true,"includeTokenBalanceChanges":true,"includeLogs":false,"includeInstructions":false,"eventFormat":"raw|enhanced","filterTokenBalances":false}
 {"op":"resume","clientId":"<client-id>"}
 {"op":"getState"}
 {"op":"ping"}
@@ -41,6 +41,7 @@ Notes:
 - You can also switch formats with `setOptions.eventFormat`.
 
 By default, `includeLogs` is false to reduce payload size. You can disable `includeAccounts` or `includeTokenBalanceChanges` to further reduce traffic.
+Enhanced `instructions` are excluded by default; set `includeInstructions=true` to include them.
 
 ## Resume and replay
 
@@ -78,7 +79,7 @@ Each client gets a stable `clientId` in the `status` event. On reconnect, send `
 - `nativeTransfers`: derived from System Program instructions
 - `tokenTransfers`: derived by parsing Token Program instructions (with cached token metadata)
 - `accountData`: native balance changes plus raw token deltas
-- `instructions`: top-level + inner instructions (base58 data)
+- `instructions`: top-level + inner instructions (base58 data, optional when `includeInstructions=true`)
 - `logs` and `computeUnitsConsumed` when available
 
 `accounts` may be omitted if disabled via `setOptions`. `tokenBalanceChanges` (raw) and `accountData.tokenBalanceChanges` (enhanced) are filtered to the watched accounts/mints only when `filterTokenBalances=true`; otherwise they include all token balance changes in the transaction. Enhanced `tokenTransfers` are derived from Token Program instructions and include intermediate hops; set `includeTokenBalanceChanges=false` to omit them. `logs` may be omitted if disabled via `setOptions`. Processed transactions always set `timestamp: null`; confirmed transactions use the cached block time when available.
@@ -237,5 +238,6 @@ Client example environment variables:
 - `BRIDGE_CLIENT_ID` (optional resume token)
 - `BRIDGE_EVENT_FORMAT` (`raw` or `enhanced`)
 - `BRIDGE_FILTER_TOKEN_BALANCES` (`true` to filter balances)
+- `BRIDGE_INCLUDE_INSTRUCTIONS` (`true` to include enhanced `instructions`)
 - `BRIDGE_CA_CERT` (path to CA bundle for `wss://`)
 - `BRIDGE_INSECURE_TLS` (`true` to skip TLS verification; dev only)

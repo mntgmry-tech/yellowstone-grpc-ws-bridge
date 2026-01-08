@@ -74,6 +74,7 @@ Environment variables:
 - `BRIDGE_EVENT_FORMAT` (client examples only, `raw` or `enhanced`)
 - `BRIDGE_FILTER_TOKEN_BALANCES` (client examples only, `true` to filter balances)
 - `BRIDGE_API_KEY` (client examples only, raw api key without the `Bearer ` prefix)
+- `BRIDGE_INCLUDE_INSTRUCTIONS` (client examples only, `true` to include enhanced `instructions`)
 - `BRIDGE_CA_CERT` (client examples only, path to a CA bundle for `wss://` endpoints)
 - `BRIDGE_INSECURE_TLS` (client examples only, set `true` to skip TLS verification; dev only)
 
@@ -140,17 +141,19 @@ Send JSON messages to update watchlists:
 - `{"op":"resume","clientId":"<client-id>"}`
 - `{"op":"getState"}`
 - `{"op":"ping"}`
-- `{"op":"setOptions","includeAccounts":true,"includeTokenBalanceChanges":true,"includeLogs":false,"eventFormat":"raw|enhanced","filterTokenBalances":false}`
+- `{"op":"setOptions","includeAccounts":true,"includeTokenBalanceChanges":true,"includeLogs":false,"includeInstructions":false,"eventFormat":"raw|enhanced","filterTokenBalances":false}`
 
 By default, the bridge emits the raw transaction format and excludes `logs` to
 keep payloads small. `accounts` and the token-derived fields (`tokenTransfers`
 plus `accountData.tokenBalanceChanges`) are included by default in enhanced mode
 and can be disabled via `setOptions` (token transfers become empty and
-`accountData` token changes are cleared). Set `filterTokenBalances` to `true` to
-filter token balance changes to the watched accounts/mints; by default all token
-balance changes are included. The server sends periodic WebSocket pings; missing
-pongs or inactivity past `WS_IDLE_TIMEOUT_MS` closes the connection. Any client
-message (including `ping`) also counts as activity.
+`accountData` token changes are cleared). Enhanced `instructions` are excluded
+by default and can be enabled with `includeInstructions=true`. Set
+`filterTokenBalances` to `true` to filter token balance changes to the watched
+accounts/mints; by default all token balance changes are included. The server
+sends periodic WebSocket pings; missing pongs or inactivity past
+`WS_IDLE_TIMEOUT_MS` closes the connection. Any client message (including `ping`)
+also counts as activity.
 
 To choose the format at connection time, append `?format=raw` or
 `?format=enhanced` to the WebSocket URL (defaults to `raw`).
@@ -198,7 +201,7 @@ exceeded, the oldest events are dropped.
 - `nativeTransfers`: derived from System Program instructions
 - `tokenTransfers`: derived by parsing Token Program instructions (with cached token metadata)
 - `accountData`: native balance changes plus raw token deltas
-- `instructions`: top-level + inner instructions (base58 data)
+- `instructions`: top-level + inner instructions (base58 data, optional when `includeInstructions=true`)
 - `logs` and `computeUnitsConsumed` when available
 
 `accounts` may be omitted if disabled via `setOptions`. `tokenBalanceChanges`
