@@ -74,6 +74,10 @@ Environment variables:
 - `BRIDGE_EVENT_FORMAT` (client examples only, `raw` or `enhanced`)
 - `BRIDGE_FILTER_TOKEN_BALANCES` (client examples only, `true` to filter balances)
 - `BRIDGE_API_KEY` (client examples only, raw api key without the `Bearer ` prefix)
+- `BRIDGE_CA_CERT` (client examples only, path to a CA bundle for `wss://` endpoints)
+- `BRIDGE_INSECURE_TLS` (client examples only, set `true` to skip TLS verification; dev only)
+
+Note: for `wss://` with Let's Encrypt, ensure nginx serves a full chain (leaf + intermediate, typically 2 certs). If Python still fails to verify, install `certifi` or set `BRIDGE_CA_CERT` to the fullchain file.
 
 Copy `example.env` to `.env` to get started.
 

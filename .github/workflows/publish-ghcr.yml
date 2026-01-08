@@ -3,6 +3,9 @@ name: Publish Image
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'examples/**'
+      - '**/*.md'
 
 permissions:
   contents: read

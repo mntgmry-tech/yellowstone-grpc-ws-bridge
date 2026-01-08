@@ -3,13 +3,13 @@ import { WebSocket } from 'ws'
 
 dotenv.config()
 
-const WS_URL = process.env.BRIDGE_WS_URL ?? 'ws://127.0.0.1:8787'
-const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? 'da9bf3cd-45a0-4c1a-bbd7-5aadc5d99709'
-const API_KEY = process.env.BRIDGE_API_KEY ?? 'c22eb1a5eec0ef0a35aa8a14d7b96f76f5dcf4bd42c19d21b06722e061b5198f'
+const WS_URL = process.env.BRIDGE_WS_URL ?? 'wss://sol.crypto-tech.cloud' //'ws://127.0.0.1:8787'
+const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? 'c97ef1f0-d1f3-4dfc-a15e-a428a6528d7f'
+const API_KEY = process.env.BRIDGE_API_KEY ?? '9529411f2b0407231537bc1fcd7d72979464b61697638f4b1b6f747d1fc992fa'
 const MAX_PAYLOAD = 64 * 1024 * 1024
-const EVENT_FORMAT = process.env.BRIDGE_EVENT_FORMAT ?? 'enhanced'
+const EVENT_FORMAT = process.env.BRIDGE_EVENT_FORMAT ?? 'raw' //'enhanced'
 const FILTER_TOKEN_BALANCES =
-  (process.env.BRIDGE_FILTER_TOKEN_BALANCES ?? '').toLowerCase() === 'false'
+  (process.env.BRIDGE_FILTER_TOKEN_BALANCES ?? '').toLowerCase() === 'true' //'false'
 
 const INCLUDE_ACCOUNTS = true
 const INCLUDE_TOKEN_BALANCE_CHANGES = true

@@ -1,6 +1,8 @@
 import asyncio
+import inspect
 import json
 import os
+import ssl
 import websockets
 
 WS_URL = os.environ.get("BRIDGE_WS_URL", "ws://127.0.0.1:8787")
@@ -8,6 +10,9 @@ CLIENT_ID = os.environ.get("BRIDGE_CLIENT_ID", "")
 API_KEY = os.environ.get("BRIDGE_API_KEY", "")
 EVENT_FORMAT = os.environ.get("BRIDGE_EVENT_FORMAT", "")
 FILTER_TOKEN_BALANCES = os.environ.get("BRIDGE_FILTER_TOKEN_BALANCES", "")
+# For wss:// with Let's Encrypt, set BRIDGE_CA_CERT to the fullchain or install certifi.
+TLS_CA_CERT = os.environ.get("BRIDGE_CA_CERT", "")
+TLS_INSECURE = os.environ.get("BRIDGE_INSECURE_TLS", "")
 
 INCLUDE_ACCOUNTS = True
 INCLUDE_TOKEN_BALANCE_CHANGES = True
@@ -19,6 +24,7 @@ WATCH_ACCOUNTS = [
 
 WATCH_MINTS = [
     # "YourMintPubkeyHere",
+    "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 ]
 
 async def main():
@@ -31,7 +37,36 @@ async def main():
     if api_key.lower().startswith("bearer "):
         api_key = api_key[7:].strip()
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-    async with websockets.connect(ws_url, max_size=64 * 1024 * 1024, extra_headers=headers) as ws:
+    connect_kwargs = {"max_size": 64 * 1024 * 1024}
+    if ws_url.lower().startswith("wss://"):
+        if TLS_INSECURE.lower() in ("true", "1", "yes"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        else:
+            ssl_context = ssl.create_default_context()
+            if TLS_CA_CERT:
+                try:
+                    ssl_context.load_verify_locations(TLS_CA_CERT)
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to load CA cert from {TLS_CA_CERT}: {exc}") from exc
+            else:
+                try:
+                    import certifi
+                except Exception:
+                    certifi = None
+                if certifi is not None:
+                    ssl_context.load_verify_locations(certifi.where())
+        connect_kwargs["ssl"] = ssl_context
+    if headers:
+        params = inspect.signature(websockets.connect).parameters
+        if "extra_headers" in params:
+            connect_kwargs["extra_headers"] = headers
+        elif "additional_headers" in params:
+            connect_kwargs["additional_headers"] = headers
+        else:
+            raise RuntimeError("websockets.connect does not support custom headers in this version")
+    async with websockets.connect(ws_url, **connect_kwargs) as ws:
         if CLIENT_ID:
             await ws.send(json.dumps({"op": "resume", "clientId": CLIENT_ID}))
         options = {
@@ -64,4 +99,7 @@ async def main():
                 print(json.dumps(ev, indent=2))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
