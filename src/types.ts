@@ -14,6 +14,7 @@ export type ClientMsg =
       includeAccounts?: boolean
       includeTokenBalanceChanges?: boolean
       includeLogs?: boolean
+      includeInstructions?: boolean
       eventFormat?: EventFormat
       filterTokenBalances?: boolean
     }
@@ -24,6 +25,7 @@ export type ClientOptions = {
   includeAccounts: boolean
   includeTokenBalanceChanges: boolean
   includeLogs: boolean
+  includeInstructions: boolean
   eventFormat: EventFormat
   filterTokenBalances: boolean
 }
@@ -103,7 +105,7 @@ export type EnhancedTransactionEvent = {
   nativeTransfers: NativeTransfer[]
   tokenTransfers: TokenTransfer[]
   accountData: AccountData[]
-  instructions: Instruction[]
+  instructions?: Instruction[]
   computeUnitsConsumed: number
   logs?: string[]
 }

@@ -1,6 +1,6 @@
 {
   "name": "yellowstone-grpc-ws-bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Yellowstone gRPC -> WebSocket bridge (processed + confirmed) with dynamic account subscriptions.",
   "main": "dist/index.js",

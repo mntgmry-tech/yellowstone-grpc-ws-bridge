@@ -3,17 +3,17 @@ import { WebSocket } from 'ws'
 
 dotenv.config()
 
-const WS_URL = process.env.BRIDGE_WS_URL ?? 'wss://sol.crypto-tech.cloud' //'ws://127.0.0.1:8787'
-const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? 'c97ef1f0-d1f3-4dfc-a15e-a428a6528d7f'
-const API_KEY = process.env.BRIDGE_API_KEY ?? '9529411f2b0407231537bc1fcd7d72979464b61697638f4b1b6f747d1fc992fa'
+const WS_URL = process.env.BRIDGE_WS_URL ?? 'ws://127.0.0.1:8787'
+const CLIENT_ID = process.env.BRIDGE_CLIENT_ID ?? ''
+const API_KEY = process.env.BRIDGE_API_KEY ?? ''
 const MAX_PAYLOAD = 64 * 1024 * 1024
-const EVENT_FORMAT = process.env.BRIDGE_EVENT_FORMAT ?? 'raw' //'enhanced'
-const FILTER_TOKEN_BALANCES =
-  (process.env.BRIDGE_FILTER_TOKEN_BALANCES ?? '').toLowerCase() === 'true' //'false'
+const EVENT_FORMAT = process.env.BRIDGE_EVENT_FORMAT ?? 'enhanced' //'raw'
+const FILTER_TOKEN_BALANCES = (process.env.BRIDGE_FILTER_TOKEN_BALANCES ?? '').toLowerCase() === 'false' //'false'
 
 const INCLUDE_ACCOUNTS = true
 const INCLUDE_TOKEN_BALANCE_CHANGES = true
 const INCLUDE_LOGS = false
+const INCLUDE_INSTRUCTIONS = (process.env.BRIDGE_INCLUDE_INSTRUCTIONS ?? '').toLowerCase() === 'true'
 
 const WATCH_ACCOUNTS: string[] = [
   // 'YourAtaPubkeyHere'
@@ -33,6 +33,7 @@ type ClientMsg =
       includeAccounts?: boolean
       includeTokenBalanceChanges?: boolean
       includeLogs?: boolean
+      includeInstructions?: boolean
       eventFormat?: 'raw' | 'enhanced'
       filterTokenBalances?: boolean
     }
@@ -126,7 +127,7 @@ type TransactionEvent = {
   nativeTransfers: NativeTransfer[]
   tokenTransfers: TokenTransfer[]
   accountData: AccountData[]
-  instructions: Instruction[]
+  instructions?: Instruction[]
   logs?: string[]
   computeUnitsConsumed: number
 }
@@ -181,6 +182,7 @@ ws.on('open', () => {
     includeAccounts: INCLUDE_ACCOUNTS,
     includeTokenBalanceChanges: INCLUDE_TOKEN_BALANCE_CHANGES,
     includeLogs: INCLUDE_LOGS,
+    includeInstructions: INCLUDE_INSTRUCTIONS,
     eventFormat,
     filterTokenBalances: FILTER_TOKEN_BALANCES
   })

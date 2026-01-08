@@ -17,6 +17,7 @@ TLS_INSECURE = os.environ.get("BRIDGE_INSECURE_TLS", "")
 INCLUDE_ACCOUNTS = True
 INCLUDE_TOKEN_BALANCE_CHANGES = True
 INCLUDE_LOGS = False
+INCLUDE_INSTRUCTIONS = os.environ.get("BRIDGE_INCLUDE_INSTRUCTIONS", "").lower() in ("true", "1", "yes")
 
 WATCH_ACCOUNTS = [
     # "YourAtaPubkeyHere",
@@ -74,6 +75,7 @@ async def main():
             "includeAccounts": INCLUDE_ACCOUNTS,
             "includeTokenBalanceChanges": INCLUDE_TOKEN_BALANCE_CHANGES,
             "includeLogs": INCLUDE_LOGS,
+            "includeInstructions": INCLUDE_INSTRUCTIONS,
         }
         if FILTER_TOKEN_BALANCES.lower() in ("true", "1", "yes"):
             options["filterTokenBalances"] = True
