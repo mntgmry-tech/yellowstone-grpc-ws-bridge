@@ -52,6 +52,7 @@ Each client gets a stable `clientId` in the `status` event. On reconnect, either
 - reconnect with `?clientId=<client-id>` to resume automatically.
 
 Resume is only allowed when using the same API key that created the session. The server retains subscriptions for `GRPC_SUBSCRIPTION_RETENTION_MS`, and the replay buffer is capped by `GRPC_RETENTION_MAX_EVENTS`.
+If a `clientId` is already connected, new connections using that id are rejected.
 
 ## Events
 

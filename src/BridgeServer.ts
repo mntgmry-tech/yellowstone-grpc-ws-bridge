@@ -416,6 +416,13 @@ export class BridgeServer {
           ws.close(1008, 'client_id_conflict')
           return
         }
+        if (existing.connected) {
+          console.warn(
+            `[ws] resume denied clientId=${clientId} reason=client_id_in_use apiKeyId=${apiKey.id ?? 'unknown'} (${this.clientLabel(ws)})`
+          )
+          ws.close(1008, 'client_id_in_use')
+          return
+        }
         this.totalClients += 1
         this.attachSession(ws, existing, existing.disconnectedAt ?? existing.lastSeenAt)
         console.log(`[ws] client resumed clientId=${existing.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`)
@@ -548,6 +555,14 @@ export class BridgeServer {
     if (!this.canResumeSession(current, target)) {
       console.warn(
         `[ws] resume denied clientId=${current.id} targetId=${target.id} apiKeyId=${current.apiKeyId ?? 'unknown'}`
+      )
+      this.sendStatus(current)
+      return
+    }
+
+    if (target.connected && target.ws && target.ws !== ws) {
+      console.warn(
+        `[ws] resume denied clientId=${current.id} targetId=${target.id} reason=client_id_in_use apiKeyId=${current.apiKeyId ?? 'unknown'}`
       )
       this.sendStatus(current)
       return

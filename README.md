@@ -167,6 +167,7 @@ If a client disconnects, its subscriptions are retained for
 `{"op":"resume","clientId":"<client-id>"}` or `?clientId=<client-id>`) to resume
 and receive missed transactions from the retention window. Set the retention to
 `0` to drop subscriptions immediately on disconnect.
+If a `clientId` is already connected, new connections using that id are rejected.
 
 The replay buffer is bounded by `GRPC_RETENTION_MAX_EVENTS`; if that limit is
 exceeded, the oldest events are dropped.
