@@ -68,6 +68,8 @@ const grpcOptions = {
 const bearerPattern = /^Bearer\s+(.+)$/i
 const apiKeyPattern = /^[a-f0-9]{64}$/i
 const maxAuthHeaderLength = 512
+const clientIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/
+const maxClientIdLength = 128
 
 type BearerTokenResult = {
   token?: string
@@ -395,8 +397,46 @@ export class BridgeServer {
       ws.close(1008, 'unauthorized')
       return
     }
-    const session = this.createSession(ws, this.getInitialClientOptions(request), apiKey)
     ws.on('pong', () => this.touchClient(ws))
+
+    const options = this.getInitialClientOptions(request)
+    const { clientId, error } = this.getInitialClientId(request)
+    if (error) {
+      ws.close(1008, error)
+      return
+    }
+
+    if (clientId) {
+      const existing = this.sessions.get(clientId)
+      if (existing) {
+        if (!this.canResumeWithApiKey(apiKey, existing)) {
+          console.warn(
+            `[ws] resume denied clientId=${clientId} apiKeyId=${apiKey.id ?? 'unknown'} (${this.clientLabel(ws)})`
+          )
+          ws.close(1008, 'client_id_conflict')
+          return
+        }
+        if (existing.connected) {
+          console.warn(
+            `[ws] resume denied clientId=${clientId} reason=client_id_in_use apiKeyId=${apiKey.id ?? 'unknown'} (${this.clientLabel(ws)})`
+          )
+          ws.close(1008, 'client_id_in_use')
+          return
+        }
+        this.totalClients += 1
+        this.attachSession(ws, existing, existing.disconnectedAt ?? existing.lastSeenAt)
+        console.log(`[ws] client resumed clientId=${existing.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`)
+        return
+      }
+      const session = this.createSession(ws, options, apiKey, clientId)
+      console.log(
+        `[ws] client connected clientId=${session.id} apiKeyId=${session.apiKeyId ?? 'unknown'} (${this.clientLabel(ws)}) total=${this.connectedCount()}`
+      )
+      this.sendStatus(session)
+      return
+    }
+
+    const session = this.createSession(ws, options, apiKey)
     console.log(
       `[ws] client connected clientId=${session.id} apiKeyId=${session.apiKeyId ?? 'unknown'} (${this.clientLabel(ws)}) total=${this.connectedCount()}`
     )
@@ -475,9 +515,14 @@ export class BridgeServer {
     )
   }
 
-  private createSession(ws: WebSocket, options?: Partial<ClientOptions>, apiKey?: ApiKeyAuth): ClientSession {
+  private createSession(
+    ws: WebSocket,
+    options?: Partial<ClientOptions>,
+    apiKey?: ApiKeyAuth,
+    clientId?: string
+  ): ClientSession {
     const session: ClientSession = {
-      id: randomUUID(),
+      id: clientId ?? randomUUID(),
       apiKeyId: apiKey?.id,
       apiUserId: apiKey?.userId,
       apiUserName: apiKey?.userName,
@@ -515,10 +560,32 @@ export class BridgeServer {
       return
     }
 
+    if (target.connected && target.ws && target.ws !== ws) {
+      console.warn(
+        `[ws] resume denied clientId=${current.id} targetId=${target.id} reason=client_id_in_use apiKeyId=${current.apiKeyId ?? 'unknown'}`
+      )
+      this.sendStatus(current)
+      return
+    }
+
     if (current.id !== target.id) {
       this.removeSession(current, 'resume_replaced')
     }
+    this.attachSession(ws, target, target.disconnectedAt ?? target.lastSeenAt)
+    console.log(`[ws] client resumed clientId=${target.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`)
+  }
 
+  private canResumeSession(current: ClientSession, target: ClientSession) {
+    if (!current.apiKeyId || !target.apiKeyId) return false
+    return current.apiKeyId === target.apiKeyId
+  }
+
+  private canResumeWithApiKey(apiKey: ApiKeyAuth | undefined, target: ClientSession) {
+    if (!apiKey?.id || !target.apiKeyId) return false
+    return apiKey.id === target.apiKeyId
+  }
+
+  private attachSession(ws: WebSocket, target: ClientSession, resumeFrom?: number) {
     if (target.ws && target.ws !== ws) {
       try {
         target.ws.terminate()
@@ -528,7 +595,6 @@ export class BridgeServer {
       this.socketToSession.delete(target.ws)
     }
 
-    const resumeFrom = target.disconnectedAt ?? target.lastSeenAt
     target.ws = ws
     target.connected = true
     target.remote = this.clientLabel(ws)
@@ -536,14 +602,10 @@ export class BridgeServer {
     target.disconnectedAt = undefined
     this.socketToSession.set(ws, target)
 
-    console.log(`[ws] client resumed clientId=${target.id} (${this.clientLabel(ws)}) total=${this.connectedCount()}`)
     this.sendStatus(target)
-    this.replayBacklog(target, resumeFrom)
-  }
-
-  private canResumeSession(current: ClientSession, target: ClientSession) {
-    if (!current.apiKeyId || !target.apiKeyId) return false
-    return current.apiKeyId === target.apiKeyId
+    if (resumeFrom !== undefined) {
+      this.replayBacklog(target, resumeFrom)
+    }
   }
 
   private removeSession(session: ClientSession, reason: string) {
@@ -634,17 +696,33 @@ export class BridgeServer {
   }
 
   private getInitialClientOptions(request?: IncomingMessage): Partial<ClientOptions> {
-    if (!request?.url) return {}
-    const host = request.headers.host ?? 'localhost'
-    let url: URL
-    try {
-      url = new URL(request.url, `http://${host}`)
-    } catch {
-      return {}
-    }
+    const url = this.parseRequestUrl(request)
+    if (!url) return {}
     const formatParam = url.searchParams.get('format') ?? url.searchParams.get('eventFormat')
     const eventFormat = this.normalizeEventFormat(formatParam ?? undefined)
     return eventFormat ? { eventFormat } : {}
+  }
+
+  private getInitialClientId(request?: IncomingMessage): { clientId?: string; error?: string } {
+    const url = this.parseRequestUrl(request)
+    if (!url) return {}
+    const raw = url.searchParams.get('clientId') ?? url.searchParams.get('client_id')
+    if (raw === null) return {}
+    const clientId = raw.trim()
+    if (!clientId) return { error: 'client_id_empty' }
+    if (clientId.length > maxClientIdLength) return { error: 'client_id_too_long' }
+    if (!clientIdPattern.test(clientId)) return { error: 'client_id_invalid' }
+    return { clientId }
+  }
+
+  private parseRequestUrl(request?: IncomingMessage): URL | undefined {
+    if (!request?.url) return undefined
+    const host = request.headers.host ?? 'localhost'
+    try {
+      return new URL(request.url, `http://${host}`)
+    } catch {
+      return undefined
+    }
   }
 
   private normalizeEventFormat(value?: string): EventFormat | undefined {

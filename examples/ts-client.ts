@@ -161,10 +161,24 @@ const eventFormat =
   normalizedFormat === 'raw' || normalizedFormat === 'enhanced' ? normalizedFormat : undefined
 
 let wsUrl = WS_URL
+let clientIdInUrl = false
 if (eventFormat) {
   try {
     const parsed = new URL(WS_URL)
     parsed.searchParams.set('format', eventFormat)
+    if (CLIENT_ID) {
+      parsed.searchParams.set('clientId', CLIENT_ID)
+      clientIdInUrl = true
+    }
+    wsUrl = parsed.toString()
+  } catch {
+    wsUrl = WS_URL
+  }
+} else if (CLIENT_ID) {
+  try {
+    const parsed = new URL(WS_URL)
+    parsed.searchParams.set('clientId', CLIENT_ID)
+    clientIdInUrl = true
     wsUrl = parsed.toString()
   } catch {
     wsUrl = WS_URL
@@ -176,7 +190,7 @@ const headers = normalizedApiKey ? { Authorization: `Bearer ${normalizedApiKey}`
 const ws = new WebSocket(wsUrl, { maxPayload: MAX_PAYLOAD, headers })
 
 ws.on('open', () => {
-  if (CLIENT_ID) send(ws, { op: 'resume', clientId: CLIENT_ID })
+  if (CLIENT_ID && !clientIdInUrl) send(ws, { op: 'resume', clientId: CLIENT_ID })
   send(ws, {
     op: 'setOptions',
     includeAccounts: INCLUDE_ACCOUNTS,
