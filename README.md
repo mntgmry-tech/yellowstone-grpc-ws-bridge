@@ -70,7 +70,7 @@ Environment variables:
 - `API_KEY_CACHE_MAX_SIZE` (default `100000`) max API key entries held in memory
 - `API_KEY_LAST_USED_FLUSH_MS` (default `15000`) batch interval for lastUsed updates
 - `BRIDGE_WS_URL` (client examples only, default `ws://127.0.0.1:8787`)
-- `BRIDGE_CLIENT_ID` (client examples only, optional resume token)
+- `BRIDGE_CLIENT_ID` (client examples only, optional static client id for connect/resume)
 - `BRIDGE_EVENT_FORMAT` (client examples only, `raw` or `enhanced`)
 - `BRIDGE_FILTER_TOKEN_BALANCES` (client examples only, `true` to filter balances)
 - `BRIDGE_API_KEY` (client examples only, raw api key without the `Bearer ` prefix)
@@ -156,15 +156,17 @@ sends periodic WebSocket pings; missing pongs or inactivity past
 also counts as activity.
 
 To choose the format at connection time, append `?format=raw` or
-`?format=enhanced` to the WebSocket URL (defaults to `raw`).
+`?format=enhanced` to the WebSocket URL (defaults to `raw`). To set a static
+client id at connect time, append `?clientId=<id>` (or `client_id`).
 
 Control messages are rate-limited per client; messages above the configured
 limit are dropped with a warning.
 
 If a client disconnects, its subscriptions are retained for
-`GRPC_SUBSCRIPTION_RETENTION_MS`. Reconnect with the last seen `clientId` to
-resume and receive missed transactions from the retention window. Set the
-retention to `0` to drop subscriptions immediately on disconnect.
+`GRPC_SUBSCRIPTION_RETENTION_MS`. Reconnect with the last seen `clientId` (via
+`{"op":"resume","clientId":"<client-id>"}` or `?clientId=<client-id>`) to resume
+and receive missed transactions from the retention window. Set the retention to
+`0` to drop subscriptions immediately on disconnect.
 
 The replay buffer is bounded by `GRPC_RETENTION_MAX_EVENTS`; if that limit is
 exceeded, the oldest events are dropped.

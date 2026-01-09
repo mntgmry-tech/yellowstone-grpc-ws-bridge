@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import ssl
+import urllib.parse
 import websockets
 
 WS_URL = os.environ.get("BRIDGE_WS_URL", "ws://127.0.0.1:8787")
@@ -30,9 +31,15 @@ WATCH_MINTS = [
 
 async def main():
     ws_url = WS_URL
+    params = []
     if EVENT_FORMAT.lower() in ("raw", "enhanced"):
+        params.append(f"format={EVENT_FORMAT.lower()}")
+    if CLIENT_ID:
+        params.append(f"clientId={urllib.parse.quote(CLIENT_ID)}")
+    if params:
         separator = "&" if "?" in WS_URL else "?"
-        ws_url = f"{WS_URL}{separator}format={EVENT_FORMAT.lower()}"
+        ws_url = f"{WS_URL}{separator}{'&'.join(params)}"
+    client_id_in_url = bool(CLIENT_ID)
 
     api_key = API_KEY.strip()
     if api_key.lower().startswith("bearer "):
@@ -68,7 +75,7 @@ async def main():
         else:
             raise RuntimeError("websockets.connect does not support custom headers in this version")
     async with websockets.connect(ws_url, **connect_kwargs) as ws:
-        if CLIENT_ID:
+        if CLIENT_ID and not client_id_in_url:
             await ws.send(json.dumps({"op": "resume", "clientId": CLIENT_ID}))
         options = {
             "op": "setOptions",

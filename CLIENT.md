@@ -7,7 +7,8 @@ This guide covers everything you need to connect to the bridge WebSocket, authen
 1) Get an API key from your operator (or the internal `/admin` UI).
 2) Connect to the WebSocket endpoint with a bearer token:
    - `Authorization: Bearer <api-key>`
-3) Send a watchlist (`setAccounts` and/or `setMints`). No transaction events are emitted until you set a watchlist.
+3) Optional: set a static client id at connect time with `?clientId=<id>` (or `client_id`).
+4) Send a watchlist (`setAccounts` and/or `setMints`). No transaction events are emitted until you set a watchlist.
 
 For TLS (`wss://`), use a valid CA bundle. If the server uses Let's Encrypt, the full chain should include 2 certs (leaf + intermediate). Python clients may need `certifi` or `BRIDGE_CA_CERT`.
 
@@ -39,13 +40,18 @@ Notes:
 - Default format is `raw`.
 - To choose at connect time: append `?format=raw` or `?format=enhanced` to the WebSocket URL.
 - You can also switch formats with `setOptions.eventFormat`.
+- To set a static client id at connect time: append `?clientId=<id>` (or `client_id`). Allowed characters are `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`, `-` (max 128 chars).
 
 By default, `includeLogs` is false to reduce payload size. You can disable `includeAccounts` or `includeTokenBalanceChanges` to further reduce traffic.
 Enhanced `instructions` are excluded by default; set `includeInstructions=true` to include them.
 
 ## Resume and replay
 
-Each client gets a stable `clientId` in the `status` event. On reconnect, send `{"op":"resume","clientId":"<client-id>"}` to resume. Resume is only allowed when using the same API key that created the session. The server retains subscriptions for `GRPC_SUBSCRIPTION_RETENTION_MS`, and the replay buffer is capped by `GRPC_RETENTION_MAX_EVENTS`.
+Each client gets a stable `clientId` in the `status` event. On reconnect, either:
+- send `{"op":"resume","clientId":"<client-id>"}`, or
+- reconnect with `?clientId=<client-id>` to resume automatically.
+
+Resume is only allowed when using the same API key that created the session. The server retains subscriptions for `GRPC_SUBSCRIPTION_RETENTION_MS`, and the replay buffer is capped by `GRPC_RETENTION_MAX_EVENTS`.
 
 ## Events
 
